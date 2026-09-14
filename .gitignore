@@ -1,0 +1,5 @@
+# Compiled GUI binary (build output of `make build`)
+/notuya-gui
+
+# Agent tooling
+.mastracode/

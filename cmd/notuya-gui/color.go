@@ -70,12 +70,21 @@ func hsvToRGBInt(h, s, v float64) (r, g, b uint8) {
 	return uint8(math.Round(rf * 255)), uint8(math.Round(gf * 255)), uint8(math.Round(bf * 255))
 }
 
+// hexToRGB parses a 6-digit RRGGBB hex string straight to 8-bit RGB. A parse
+// failure yields the default white so a corrupt cache never lights black.
+func hexToRGB(hexColor string) (r, g, b uint8) {
+	var ri, gi, bi int
+	if _, err := fmt.Sscanf(hexColor, "%02x%02x%02x", &ri, &gi, &bi); err != nil {
+		return 255, 255, 255
+	}
+	return uint8(ri), uint8(gi), uint8(bi)
+}
+
 // hexToHSV parses a 6-digit RRGGBB hex string into HSV, mirroring
 // picker.py's hex_to_hsv.
 func hexToHSV(hexColor string) (h, s, v float64) {
-	var ri, gi, bi int
-	fmt.Sscanf(hexColor, "%02x%02x%02x", &ri, &gi, &bi)
-	return rgbToHSV(float64(ri)/255.0, float64(gi)/255.0, float64(bi)/255.0)
+	r, g, b := hexToRGB(hexColor)
+	return rgbToHSV(float64(r)/255.0, float64(g)/255.0, float64(b)/255.0)
 }
 
 // rgbToHex formats 8-bit RGB as a lowercase RRGGBB hex string (no '#').

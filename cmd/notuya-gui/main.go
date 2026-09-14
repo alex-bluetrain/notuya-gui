@@ -360,9 +360,9 @@ func (p *picker) scaledRGB() device.RGB {
 	r, g, b := hsvToRGBInt(p.selHue, p.selSat, 1.0)
 	f := float64(p.selBrightness) / 100.0
 	return device.RGB{
-		R: uint8(float64(r) * f),
-		G: uint8(float64(g) * f),
-		B: uint8(float64(b) * f),
+		R: uint8(math.Round(float64(r) * f)),
+		G: uint8(math.Round(float64(g) * f)),
+		B: uint8(math.Round(float64(b) * f)),
 	}
 }
 
@@ -388,7 +388,7 @@ func (p *picker) finish(accepted bool) {
 		}
 		final = p.scaledRGB()
 	} else {
-		r, g, b := hsvToRGBInt2(p.prevHex)
+		r, g, b := hexToRGB(p.prevHex)
 		final = device.RGB{R: r, G: g, B: b}
 	}
 
@@ -404,12 +404,4 @@ func (p *picker) finish(accepted bool) {
 			p.app.Release()
 		})
 	}()
-}
-
-// hsvToRGBInt2 parses a hex colour straight to 8-bit RGB, used on cancel to
-// restore the previous colour exactly as stored.
-func hsvToRGBInt2(hexColor string) (r, g, b uint8) {
-	var ri, gi, bi int
-	fmt.Sscanf(hexColor, "%02x%02x%02x", &ri, &gi, &bi)
-	return uint8(ri), uint8(gi), uint8(bi)
 }

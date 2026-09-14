@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"math"
 	"os"
@@ -50,13 +52,34 @@ type picker struct {
 }
 
 func main() {
+	settingsMode := flag.Bool("config", false, "open the settings window to edit devices and discover bulbs")
+	flag.Parse()
+
 	configPath := resolveConfigPath()
+
+	if *settingsMode {
+		// The settings window can create a config from scratch, so a missing
+		// file is not an error here — start with no devices.
+		var devices []Device
+		if cfg, err := loadConfig(configPath); err == nil {
+			devices = cfg.Devices
+		}
+		os.Exit(runSettings(configPath, devices))
+	}
+
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "notuya-gui:", err)
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintln(os.Stderr, "hint: run `notuya-gui -config` to add devices and discover bulbs.")
+		}
 		os.Exit(1)
 	}
 
+	runPicker(configPath, cfg)
+}
+
+func runPicker(configPath string, cfg *Config) {
 	p := &picker{
 		devices:       cfg.Devices,
 		lastColPath:   lastColorPath(configPath),
@@ -68,7 +91,7 @@ func main() {
 
 	p.app = gtk.NewApplication("ar.averstraeten.tuyawheel", gio.ApplicationNonUnique)
 	p.app.ConnectActivate(func() { p.activate() })
-	os.Exit(p.app.Run(os.Args))
+	os.Exit(p.app.Run(os.Args[:1]))
 }
 
 func (p *picker) activate() {

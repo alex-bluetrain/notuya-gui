@@ -64,6 +64,20 @@ Shared with the CLI and daemon — the same files:
   leaves music mode with a final `SetColour`).
 - **Cancelar** / **Escape** reverts to the pre-open colour.
 
+## Settings & discovery
+
+```bash
+notuya-gui -config
+```
+
+Opens a settings window (a normal toplevel, not the overlay) to add, edit, and
+remove bulbs, and to **discover** bulbs on the LAN via notuya-go's
+`pkg/discovery`. Discovery finds each bulb's `device_id` and IP but **not** its
+`local_key` — that comes from Tuya's cloud, so you paste each key by hand.
+Saving preserves any keys this tool doesn't model (e.g. `wallpaper_sync`,
+theme keys) and writes atomically. Launching the picker with no config file
+prints a hint pointing here.
+
 ## Why CGO
 
 `notuya-go` is strictly `CGO_ENABLED=0` with zero external dependencies. This
@@ -84,6 +98,7 @@ replace github.com/averstraeten/notuya-go => ../notuya-go
 ```
 
 It consumes the promoted `pkg/` surface: `pkg/protocol`, `pkg/protocol35`,
-`pkg/device`, `pkg/bulb`. It never touches DP numbers or wire framing — it
+`pkg/device`, `pkg/bulb`, and `pkg/discovery` (for the settings window's LAN
+scan). It never touches DP numbers or wire framing — it
 builds a `*bulb.Bulb` per device and feeds `bulb.StreamColours` a channel of
 `bulb.StreamColour`.

@@ -139,6 +139,26 @@ Shared with the CLI and daemon — the same `config.json`:
   committed exit — the same file `picker.py` and the daemon use, so
   `GET /color`, the CLI, and the GUI all agree on what is lit.
 
+## Settings window
+
+`notuya-gui -config` opens a settings window (an ordinary GTK4 toplevel,
+**not** a layer-shell overlay) instead of the picker. It edits the shared
+`config.json`'s `devices` array — add, edit, and remove bulbs — and can
+**discover** bulbs on the LAN via notuya-go's `pkg/discovery.Scan`
+(reused; no UDP code lives here).
+
+- **Keys are entered by hand.** LAN discovery yields `device_id` + `ip`
+  only; a bulb's `local_key` comes from Tuya's cloud, which this tool
+  deliberately does not touch. Clicking a discovered device pre-fills IP +
+  Device ID; the user pastes the Local Key.
+- **Writes preserve unknown keys.** `saveConfig` round-trips the file
+  through `map[string]json.RawMessage`, replacing only `devices`, so keys
+  this tool doesn't model (`wallpaper_sync`, theme keys, anything the
+  CLI/daemon own) survive. The write is atomic (temp file + rename) since
+  the config is co-owned.
+- If the picker is launched with **no** config file, it exits with a hint
+  pointing at `notuya-gui -config` so a first-run user can create one.
+
 ## Hyprland window rules
 
 The picker is a layer-shell overlay, so under Hyprland it is a layer
@@ -156,6 +176,7 @@ overlay.
 - The `notuyad` HTTP daemon and `picker.py` stay in notuya-go /
   `~/.config/tuya`; this module does not replace or modify them. It is an
   alternative front-end that skips the daemon.
-- Multi-window, remote control, a config-editing UI, scene picker, and a
-  discovery UI are not planned.
+- Multi-window, remote control, and a scene picker are not planned.
+  (Config editing and bulb discovery, previously out of scope, now ship in
+  the settings window — see above.)
 - Publishing/tagging notuya-go: dev uses the local `replace`.

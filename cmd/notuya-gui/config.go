@@ -37,7 +37,7 @@ func resolveConfigPath() string {
 	if err != nil {
 		dir = "."
 	}
-	return filepath.Join(dir, "tuya", "config.json")
+	return filepath.Join(dir, "notuya-gui", "config.json")
 }
 
 // lastColorPath returns the last-colour cache path beside the config file,
@@ -63,6 +63,51 @@ func loadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parsing %s: %w", path, err)
 	}
 	return &cfg, nil
+}
+
+// saveConfig writes devices back into config.json at path, preserving every
+// other top-level key (wallpaper_sync, theme keys, anything the CLI/daemon
+// own) by round-tripping the file through a map of raw messages. The write is
+// atomic: a temp file is written then renamed over path, so a crash mid-write
+// can't corrupt the shared config.
+func saveConfig(path string, devices []Device) error {
+	root := map[string]json.RawMessage{}
+	if data, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(data, &root); err != nil {
+			return fmt.Errorf("config: parsing %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("config: reading %s: %w", path, err)
+	}
+
+	if devices == nil {
+		devices = []Device{}
+	}
+	devicesJSON, err := json.Marshal(devices)
+	if err != nil {
+		return fmt.Errorf("config: encoding devices: %w", err)
+	}
+	root["devices"] = devicesJSON
+
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return fmt.Errorf("config: encoding %s: %w", path, err)
+	}
+
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("config: creating %s: %w", dir, err)
+		}
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		return fmt.Errorf("config: writing %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("config: replacing %s: %w", path, err)
+	}
+	return nil
 }
 
 // readLastColor returns the cached last-applied colour (hex, no '#'), or the

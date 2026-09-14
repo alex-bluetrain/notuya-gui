@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,6 +42,68 @@ func TestLastColorRoundTrip(t *testing.T) {
 	}
 	if got := readLastColor(path); got != "ff8800" {
 		t.Errorf("round trip = %q want ff8800", got)
+	}
+}
+
+func TestSaveConfigPreservesUnknownKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := `{
+	  "devices": [
+	    {"device_id": "old", "ip_address": "10.0.0.1", "local_key": "k0", "name": "Old"}
+	  ],
+	  "wallpaper_sync": true,
+	  "theme": {"name": "gruvbox"}
+	}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	devices := []Device{{DeviceID: "new", IPAddress: "10.0.0.2", LocalKey: "k1", Name: "New"}}
+	if err := saveConfig(path, devices); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+
+	if string(root["wallpaper_sync"]) != "true" {
+		t.Errorf("wallpaper_sync changed/dropped: %s", root["wallpaper_sync"])
+	}
+	var theme map[string]string
+	if err := json.Unmarshal(root["theme"], &theme); err != nil {
+		t.Fatalf("theme key dropped or corrupt: %v", err)
+	}
+	if theme["name"] != "gruvbox" {
+		t.Errorf("theme value changed: %+v", theme)
+	}
+
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Devices) != 1 || cfg.Devices[0].DeviceID != "new" {
+		t.Errorf("devices not replaced: %+v", cfg.Devices)
+	}
+}
+
+func TestSaveConfigCreatesMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "config.json")
+	devices := []Device{{DeviceID: "a", IPAddress: "10.0.0.9", LocalKey: "k", Name: "A"}}
+	if err := saveConfig(path, devices); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Devices) != 1 || cfg.Devices[0].Name != "A" {
+		t.Errorf("devices wrong: %+v", cfg.Devices)
 	}
 }
 

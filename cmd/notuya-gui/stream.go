@@ -83,18 +83,7 @@ func (s *streamer) Set(rgb device.RGB, transition *int) {
 // serialized with streaming so the two never race on one session.
 func (s *streamer) SetPower(on bool) {
 	for _, t := range s.targets {
-		for {
-			select {
-			case t.power <- on:
-			default:
-				select {
-				case <-t.power:
-					continue
-				default:
-				}
-			}
-			break
-		}
+		offer(t.power, on)
 	}
 }
 
@@ -108,12 +97,12 @@ func (s *streamer) Close() {
 	s.cancel()
 }
 
-// offer delivers c to ch, discarding an undelivered older colour if one is
-// still queued. It never blocks.
-func offer(ch chan bulb.StreamColour, c bulb.StreamColour) {
+// offer delivers v to ch, discarding an undelivered older value if one is
+// still queued (newest-wins). It never blocks.
+func offer[T any](ch chan T, v T) {
 	for {
 		select {
-		case ch <- c:
+		case ch <- v:
 			return
 		default:
 		}

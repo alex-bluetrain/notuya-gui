@@ -18,7 +18,7 @@ import (
 const panelWheelSize = 180
 
 // devicePanel is the per-device control widget in the desktop app: a status
-// line plus power, colour wheel, brightness, colour-temperature and scene
+// line plus power, colour wheel, brightness and colour-temperature
 // controls, all wired to one control (its persistent session). All device I/O
 // runs off the GTK thread; results are marshalled back with IdleAdd.
 type devicePanel struct {
@@ -157,25 +157,11 @@ func (p *devicePanel) build() *gtk.Box {
 		p.runAsync(func(ctx context.Context) error { return p.ctl.SetColourTempPercent(ctx, v) })
 	}, p))
 
-	// Scene buttons.
-	sceneRow := gtk.NewBox(gtk.OrientationHorizontal, 6)
-	sceneLabel := gtk.NewLabel("Scenes")
-	sceneLabel.SetXAlign(0.0)
-	sceneRow.Append(sceneLabel)
-	for i := 1; i <= 4; i++ {
-		n := i
-		btn := gtk.NewButtonWithLabel(fmt.Sprintf("%d", n))
-		btn.ConnectClicked(func() {
-			p.runAsync(func(ctx context.Context) error { return p.ctl.SetScene(ctx, n) })
-		})
-		sceneRow.Append(btn)
-	}
+	// Refresh.
 	refresh := gtk.NewButtonWithLabel("Refresh")
-	refresh.SetHExpand(true)
 	refresh.SetHAlign(gtk.AlignEnd)
 	refresh.ConnectClicked(func() { p.refresh() })
-	sceneRow.Append(refresh)
-	box.Append(sceneRow)
+	box.Append(refresh)
 
 	p.root = box
 	p.root.AddCSSClass("card")

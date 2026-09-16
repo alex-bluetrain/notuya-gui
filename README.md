@@ -98,8 +98,8 @@ lists, and preference groups for a native GNOME look.
 
 The **Lights** view lists each device as a `card`: an `AdwActionRow` header with
 the name, live status, and a power switch, plus a colour wheel + swatch,
-brightness and colour-temperature sliders, scene buttons, and a **Refresh**
-button that re-reads live status. Dragging a device's wheel streams the colour
+brightness and colour-temperature sliders, and a **Refresh** button that
+re-reads live status. Dragging a device's wheel streams the colour
 live (music mode); on release the final colour is committed so it sticks.
 
 The **Rooms** view is a mobile-style overview plus room management. The top

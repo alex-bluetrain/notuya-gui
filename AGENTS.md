@@ -116,7 +116,7 @@ app.go           the default desktop window (libadwaita: AdwApplicationWindow +
                  "N of M lights on", master switch) reusing the Lights panels,
                  plus room CRUD (create/rename/delete + membership).
 device_panel.go  per-device control card (AdwActionRow header + power/bright/
-                 colour/temp/scene/status; colour wheel is a plain DrawingArea)
+                 colour/temp/status; colour wheel is a plain DrawingArea)
 control.go       per-device controller: owns a bulb session, command methods +
                  Refresh + ApplyState; borrows the streamer for live colour drag
 scenes.go        scene apply (applyScene) + deviceStatus→SceneState mapping

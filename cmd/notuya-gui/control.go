@@ -193,16 +193,6 @@ func (c *control) SetColourTempPercent(ctx context.Context, pct float64) error {
 	})
 }
 
-// SetScene switches to one of the four built-in scenes (1-4). The device may
-// reject scenes; callers should surface but not hard-fail on the error.
-func (c *control) SetScene(ctx context.Context, scene int) error {
-	return c.withBulb(ctx, func(b *bulb.Bulb) error {
-		cctx, cancel := context.WithTimeout(ctx, commandTimeout)
-		defer cancel()
-		return b.Raw().SetScene(cctx, scene, true)
-	})
-}
-
 // ApplyState drives the device to the state captured in a scene. An off state
 // only cuts power. An on state first turns the switch on (colour/temp DPs do
 // not power a bulb that is off), then applies the mode data. In colour mode

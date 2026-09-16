@@ -9,17 +9,19 @@ directly. No daemon, no subprocess, no Python.
 The binary has three modes:
 
 - **`notuya-gui`** (default) — a normal desktop window organised into tabs:
-  **Luces** (per-device control — status, power, colour wheel, brightness,
-  colour temperature — grouped by room), **Escenas** (save and apply global,
-  cross-room snapshots of the lights you select), and **Ajustes** (add/edit/
-  remove bulbs, discover bulbs on the LAN, and manage rooms).
+  **Lights** (per-device control — status, power, colour wheel, brightness,
+  colour temperature), **Rooms** (a mobile-style overview: one row per room
+  with a live "N of M lights on" summary and a master on/off switch),
+  **Scenes** (save and apply global, cross-room snapshots of the lights you
+  select), and **Settings** (add/edit/remove bulbs, discover bulbs on the LAN,
+  and manage rooms).
 - **`notuya-gui --picker`** — a full-screen `wlr-layer-shell` overlay with an
   HSV colour wheel; drag across the wheel and each configured bulb is streamed
   the colour live via `bulb.StreamColours` (the same loop the CLI's `music`
   command uses), throttled and coalesced newest-wins so a slow bulb never
   stalls the UI.
 - **`notuya-gui -config`** — *deprecated.* Opens the standalone settings
-  window; the same UI is now the **Ajustes** tab of the default app. Kept only
+  window; the same UI is now the **Settings** tab of the default app. Kept only
   to bootstrap a first-run config when no `config.json` exists yet.
 
 ## Requirements
@@ -56,14 +58,11 @@ builds are fast.
 
 ## Configuration
 
-Shared with the CLI and daemon — the same files:
-
-- **Config:** `~/.config/tuya/config.json` — the `devices` array
-  (`device_id`, `ip_address`, `local_key`, `name`) and an optional top-level
-  `rooms` array (see below).
+- **Config:** `~/.config/notuya-gui/config.json` (override with
+  `$NOTUYA_CONFIG`) — the `devices` array (`device_id`, `ip_address`,
+  `local_key`, `name`) and an optional top-level `rooms` array (see below).
 - **Last-colour cache:** `last-color.txt` beside the config — read on open to
-  revert on cancel, written on a committed exit. `GET /color`, the CLI, and
-  the GUI all agree on what is lit.
+  revert on cancel, written on a committed exit.
 
 ### Rooms
 
@@ -94,27 +93,45 @@ notuya-gui
 ```
 
 A normal window built with **libadwaita** — an `AdwHeaderBar` with an
-`AdwViewSwitcher` selecting three views, laid out with Adwaita cards, boxed
+`AdwViewSwitcher` selecting four views, laid out with Adwaita cards, boxed
 lists, and preference groups for a native GNOME look.
 
-The **Luces** view lists each device, grouped by room (each room is an
-`AdwPreferencesGroup`). Per device (a `card`): an `AdwActionRow` header with the
-name, live status, and a power switch, plus a colour wheel + swatch, brightness
-and colour-temperature sliders, scene buttons, and an **Actualizar** (refresh)
-button that re-reads live status. Each room header offers **Todo ON / Todo OFF**
-group actions. Dragging a device's wheel streams the colour live (music mode);
-on release the final colour is committed so it sticks.
+The **Lights** view lists each device as a `card`: an `AdwActionRow` header with
+the name, live status, and a power switch, plus a colour wheel + swatch,
+brightness and colour-temperature sliders, scene buttons, and a **Refresh**
+button that re-reads live status. Dragging a device's wheel streams the colour
+live (music mode); on release the final colour is committed so it sticks.
 
-The **Escenas** view manages **software-only scenes** — named, global snapshots
-saved in `config.json`, shown as a boxed list of rows. **Guardar escena** opens
-an `AdwMessageDialog` with a name field and a checkbox per device (tick which
-lights to include), then captures each ticked light's current state (power,
-mode, colour/temperature, brightness). Each scene row has an **Aplicar** button
-that fans out discrete commands to its lights, and a trash button that removes
-it. Scenes are pure software (no firmware, cloud, or protocol dependency) and
-reuse the same per-device setters as the Luces tab.
+The **Rooms** view is a mobile-style overview plus room management. The top
+section (**My rooms**) has one `AdwActionRow` per room with a home icon, the
+room name, a live subtitle (**All lights on** / **N of M lights on** / **All
+lights off**), and a master **switch** that powers the whole room on or off. The
+summary and switch track the Lights tab's per-device state without issuing extra
+queries — a room's row updates as its member panels refresh or are toggled.
+Below it, **Manage rooms** lets you create/rename/delete rooms and assign
+devices to the selected room (membership checkboxes); changes persist to
+`config.json` immediately. Structural changes (a room's membership) show up in
+the control views on the next launch.
 
-The **Ajustes** tab embeds the settings UI (see below). Device edits made there
+The **Scenes** view manages **software-only scenes** — named, global snapshots
+saved in `config.json`, shown as a boxed list of rows. **New scene** opens the
+scene editor for a new scene; each existing row has an **Edit** button (pencil)
+that reopens the editor to change it, an **Apply** button that fans out discrete
+commands to its lights, and a trash button that removes it. Scenes are pure
+software (no firmware, cloud, or protocol dependency) and reuse the same
+per-device setters as the Lights tab.
+
+The **scene editor** (an `AdwWindow` modal) shows a name field and one card per
+device with an *include* checkbox and per-light controls: power switch, a
+Color/White mode selector, colour wheel + swatch, and brightness/temperature
+sliders. Editing is **live and destructive** — dragging the wheel or moving a
+slider drives the real bulb immediately (via the same music-mode live-drag and
+setters the Lights tab uses), and the lights are **not** restored when the
+editor closes, exactly like the picker and the Lights tab. **Save** writes the
+edited snapshot back into the scene (or appends a new one); **Cancel** discards
+the edits but leaves the bulbs at their last previewed value.
+
+The **Settings** tab embeds the settings UI (see below). Device edits made there
 take effect on the next launch (open sessions aren't rebuilt live).
 
 ## Usage — picker overlay
@@ -125,25 +142,26 @@ notuya-gui --picker
 
 - **Drag / click** the wheel to pick a hue and saturation; the swatch and the
   bulbs update live.
-- **Brillo** (brightness, 1–100%) scales the streamed RGB client-side.
-- **Transición** (0–10) is applied per colour, live.
-- **Luces** toggles power.
-- **Aceptar** / **Enter** persists the colour (writes the last-colour cache and
+- **Brightness** (1–100%) scales the streamed RGB client-side.
+- **Transition** (0–10) is applied per colour, live.
+- **Lights** toggles power.
+- **Accept** / **Enter** persists the colour (writes the last-colour cache and
   leaves music mode with a final `SetColour`).
-- **Cancelar** / **Escape** reverts to the pre-open colour.
+- **Cancel** / **Escape** reverts to the pre-open colour.
 
 ## Settings & discovery
 
-The settings UI lives in the **Ajustes** tab of the default app. The standalone
-window is still reachable for bootstrapping a first-run config:
+The settings UI (devices + discovery) lives in the **Settings** tab of the
+default app. The standalone window is still reachable for bootstrapping a
+first-run config (it edits devices only and preserves rooms/scenes on save):
 
 ```bash
-notuya-gui -config   # deprecated; prefer the in-app Ajustes tab
+notuya-gui -config   # deprecated; prefer the in-app Settings tab
 ```
 
-It (and the Ajustes tab) let you add, edit, and remove bulbs, **discover**
-bulbs on the LAN via notuya-go's `pkg/discovery`, and **manage rooms**
-(create/rename/remove rooms and assign devices to them).
+It (and the Settings tab) let you add, edit, and remove bulbs and **discover**
+bulbs on the LAN via notuya-go's `pkg/discovery`. Room management
+(create/rename/remove rooms and assign devices) lives in the **Rooms** tab.
 Discovery finds each bulb's `device_id` and IP but **not** its `local_key` —
 that comes from Tuya's cloud, so you paste each key by hand. Saving preserves
 any keys this tool doesn't model (e.g. `wallpaper_sync`, theme keys) and writes

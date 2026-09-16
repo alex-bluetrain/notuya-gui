@@ -37,6 +37,21 @@ type devicePanel struct {
 	selHue float64
 	selSat float64
 
+	// mode is the device's last-known work mode (colour/white), so the
+	// brightness slider knows whether brightness is the colour's "v" (DP 24)
+	// or the white brightness DP (DP 22).
+	mode string
+
+	// lastOn / hasState mirror the most recent refresh so the Rooms tab can
+	// summarise a room without issuing its own device query. onRefresh, when
+	// set, fires after applyStatus so dependent views (the Rooms tab) can
+	// recompute; onToggle fires when the user flips the power switch so the
+	// summary updates optimistically without waiting for a refresh.
+	lastOn    bool
+	hasState  bool
+	onRefresh func()
+	onToggle  func(on bool)
+
 	// suppress guards the value-changed / state-set handlers while we
 	// programmatically set widget values during a refresh, so reflecting
 	// device state back into the UI doesn't fire a command back at the bulb.
@@ -65,6 +80,11 @@ func (p *devicePanel) build() *gtk.Box {
 	p.powerSwitch.ConnectStateSet(func(state bool) bool {
 		if p.suppress {
 			return false
+		}
+		p.lastOn = state
+		p.hasState = true
+		if p.onToggle != nil {
+			p.onToggle(state)
 		}
 		p.runAsync(func(ctx context.Context) error { return p.ctl.SetPower(ctx, state) })
 		return false
@@ -118,19 +138,28 @@ func (p *devicePanel) build() *gtk.Box {
 	})
 	p.wheel.AddController(drag)
 
-	// Brightness slider.
-	box.Append(labelledScale("Brillo", &p.brightScale, 1, 100, float64(1), func(v float64) {
-		p.runAsync(func(ctx context.Context) error { return p.ctl.SetBrightnessPercent(ctx, v) })
+	// Brightness slider. In colour mode brightness is the "v" of the colour,
+	// so we rewrite the current selection's colour with the new value in a
+	// single write; in white mode it is the dedicated brightness DP.
+	box.Append(labelledScale("Brightness", &p.brightScale, 1, 100, float64(1), func(v float64) {
+		if p.mode == device.ModeColour {
+			r, g, b := hsvToRGBInt(p.selHue, p.selSat, v/100.0)
+			p.runAsync(func(ctx context.Context) error {
+				return p.ctl.SetColour(ctx, device.RGB{R: r, G: g, B: b})
+			})
+			return
+		}
+		p.runAsync(func(ctx context.Context) error { return p.ctl.SetWhiteBrightness(ctx, v) })
 	}, p))
 
 	// Colour-temperature slider (cold ↔ warm percentage).
-	box.Append(labelledScale("Temp (frío→cálido)", &p.tempScale, 0, 100, float64(1), func(v float64) {
+	box.Append(labelledScale("Temp (cold→warm)", &p.tempScale, 0, 100, float64(1), func(v float64) {
 		p.runAsync(func(ctx context.Context) error { return p.ctl.SetColourTempPercent(ctx, v) })
 	}, p))
 
 	// Scene buttons.
 	sceneRow := gtk.NewBox(gtk.OrientationHorizontal, 6)
-	sceneLabel := gtk.NewLabel("Escenas")
+	sceneLabel := gtk.NewLabel("Scenes")
 	sceneLabel.SetXAlign(0.0)
 	sceneRow.Append(sceneLabel)
 	for i := 1; i <= 4; i++ {
@@ -141,7 +170,7 @@ func (p *devicePanel) build() *gtk.Box {
 		})
 		sceneRow.Append(btn)
 	}
-	refresh := gtk.NewButtonWithLabel("Actualizar")
+	refresh := gtk.NewButtonWithLabel("Refresh")
 	refresh.SetHExpand(true)
 	refresh.SetHAlign(gtk.AlignEnd)
 	refresh.ConnectClicked(func() { p.refresh() })
@@ -184,7 +213,7 @@ func labelledScale(label string, dst **gtk.Scale, min, max, step float64, onChan
 // successful command does NOT re-read the device. Re-reading would let the
 // bulb's (possibly stale, mid-command) state overwrite the control the user is
 // still touching — the source of the slider "jumping back" on its own. State
-// is only refreshed explicitly (window open, the "Actualizar" button).
+// is only refreshed explicitly (window open, the "Refresh" button).
 func (p *devicePanel) runAsync(fn func(ctx context.Context) error) {
 	go func() {
 		if err := fn(context.Background()); err != nil {
@@ -201,7 +230,7 @@ func (p *devicePanel) refresh() {
 		st, err := p.ctl.Refresh(context.Background())
 		coreglib.IdleAdd(func() {
 			if err != nil {
-				p.headerRow.SetSubtitle("Sin conexión: " + err.Error())
+				p.headerRow.SetSubtitle("Offline: " + err.Error())
 				return
 			}
 			p.applyStatus(st)
@@ -227,15 +256,35 @@ func (p *devicePanel) applyStatus(st deviceStatus) {
 		p.swatch.QueueDraw()
 	}
 
-	state := "encendida"
+	state := "on"
 	if !st.On {
-		state = "apagada"
+		state = "off"
 	}
+	p.mode = st.Mode
+	p.lastOn = st.On
+	p.hasState = true
 	mode := st.Mode
 	if mode == "" {
 		mode = "?"
 	}
 	p.headerRow.SetSubtitle(fmt.Sprintf("%s · %s · %d%%", state, mode, int(math.Round(st.BrightPct))))
+
+	if p.onRefresh != nil {
+		p.onRefresh()
+	}
+}
+
+// setPowerOptimistic reflects a power change made elsewhere (a room master
+// switch) into this panel's switch and cached state, without issuing a command
+// or firing the switch handler. The actual command is sent by the caller.
+func (p *devicePanel) setPowerOptimistic(on bool) {
+	p.lastOn = on
+	p.hasState = true
+	if p.powerSwitch != nil {
+		p.suppress = true
+		p.powerSwitch.SetActive(on)
+		p.suppress = false
+	}
 }
 
 // setSelection updates the selected hue/sat from wheel coordinates and

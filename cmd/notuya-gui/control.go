@@ -164,13 +164,22 @@ func (c *control) SetColour(ctx context.Context, rgb device.RGB) error {
 	})
 }
 
-// SetBrightnessPercent sets brightness (mode-aware: preserves hue/sat in
-// colour mode, DP 22 in white mode).
-func (c *control) SetBrightnessPercent(ctx context.Context, pct float64) error {
+// SetColourBrightness adjusts the "v" of the current colour (DP 24) without
+// changing hue/sat or leaving colour mode. Only valid while in colour mode.
+func (c *control) SetColourBrightness(ctx context.Context, pct float64) error {
 	return c.withBulb(ctx, func(b *bulb.Bulb) error {
 		cctx, cancel := context.WithTimeout(ctx, commandTimeout)
 		defer cancel()
-		return b.SetBrightnessPercent(cctx, pct)
+		return b.SetColourBrightness(cctx, pct)
+	})
+}
+
+// SetWhiteBrightness switches to white mode and sets brightness (DP 22).
+func (c *control) SetWhiteBrightness(ctx context.Context, pct float64) error {
+	return c.withBulb(ctx, func(b *bulb.Bulb) error {
+		cctx, cancel := context.WithTimeout(ctx, commandTimeout)
+		defer cancel()
+		return b.SetWhiteBrightness(cctx, pct)
 	})
 }
 
@@ -195,29 +204,31 @@ func (c *control) SetScene(ctx context.Context, scene int) error {
 }
 
 // ApplyState drives the device to the state captured in a scene. An off state
-// only cuts power; an on state restores mode + colour/temp first, then
-// brightness last so the brightness write isn't stomped by the colour write.
-// It composes the existing setters (each mutex-guarded) rather than holding a
-// lock across the whole sequence.
+// only cuts power. An on state first turns the switch on (colour/temp DPs do
+// not power a bulb that is off), then applies the mode data. In colour mode
+// brightness is the "v" of the colour, so it is baked into a single SetColour
+// write (v = st.Bright) — no separate brightness command, no read-modify race.
+// In white mode temp and brightness are distinct DPs, applied as two writes
+// (temp first, brightness last).
 func (c *control) ApplyState(ctx context.Context, st SceneState) error {
 	if !st.On {
 		return c.SetPower(ctx, false)
 	}
+	if err := c.SetPower(ctx, true); err != nil {
+		return err
+	}
 	switch st.Mode {
 	case device.ModeColour:
-		r, g, b := hsvToRGBInt(st.Hue, st.Sat, 1.0)
-		if err := c.SetColour(ctx, device.RGB{R: r, G: g, B: b}); err != nil {
-			return err
-		}
-		return c.SetBrightnessPercent(ctx, st.Bright)
+		r, g, b := hsvToRGBInt(st.Hue, st.Sat, st.Bright/100.0)
+		return c.SetColour(ctx, device.RGB{R: r, G: g, B: b})
 	case device.ModeWhite:
 		if err := c.SetColourTempPercent(ctx, st.Temp); err != nil {
 			return err
 		}
-		return c.SetBrightnessPercent(ctx, st.Bright)
+		return c.SetWhiteBrightness(ctx, st.Bright)
 	default:
-		// Captured from a mode we don't model; just ensure it's on.
-		return c.SetPower(ctx, true)
+		// Captured from a mode we don't model; the switch is already on.
+		return nil
 	}
 }
 

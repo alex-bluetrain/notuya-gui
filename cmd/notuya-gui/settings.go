@@ -31,11 +31,13 @@ type settings struct {
 	scenes   []Scene // preserved on save; not edited by the settings UI
 	selected int     // index into devices, or -1
 
-	// scenesFn, when set (embedded-tab mode), supplies the current scenes at
-	// save time so the settings tab doesn't clobber scenes the Escenas tab
-	// created. onSaved, when set, mirrors settings' edits back to the owner
-	// (the desktop app's a.cfg) after a successful write.
+	// scenesFn / roomsFn, when set (embedded-tab mode), supply the current
+	// scenes and rooms at save time so the settings tab doesn't clobber what
+	// the Scenes tab or the Rooms tab changed (room management now lives in the
+	// Rooms tab). onSaved, when set, mirrors settings' device edits back to the
+	// owner (the desktop app's a.cfg) after a successful write.
 	scenesFn func() []Scene
+	roomsFn  func() []Room
 	onSaved  func()
 
 	list      *gtk.ListBox
@@ -46,21 +48,15 @@ type settings struct {
 	status    *gtk.Label
 	scanBtn   *gtk.Button
 	scanList  *gtk.ListBox
-
-	roomList      *gtk.ListBox
-	roomNameEntry *gtk.Entry
-	roomSelected  int // index into rooms, or -1
-	memberBox     *gtk.Box
 }
 
 func runSettings(configPath string, devices []Device, rooms []Room, scenes []Scene) int {
 	s := &settings{
-		configPath:   configPath,
-		devices:      append([]Device(nil), devices...),
-		rooms:        append([]Room(nil), rooms...),
-		scenes:       append([]Scene(nil), scenes...),
-		selected:     -1,
-		roomSelected: -1,
+		configPath: configPath,
+		devices:    append([]Device(nil), devices...),
+		rooms:      append([]Room(nil), rooms...),
+		scenes:     append([]Scene(nil), scenes...),
+		selected:   -1,
 	}
 	s.app = adw.NewApplication("ar.averstraeten.tuyawheel.settings", gio.ApplicationNonUnique)
 	s.app.ConnectActivate(func() { s.activate() })
@@ -69,7 +65,7 @@ func runSettings(configPath string, devices []Device, rooms []Room, scenes []Sce
 
 func (s *settings) activate() {
 	window := adw.NewApplicationWindow(&s.app.Application)
-	window.SetTitle("Luces — Configuración")
+	window.SetTitle("Lights — Settings")
 	window.SetDefaultSize(560, 560)
 	s.window = window
 
@@ -89,7 +85,7 @@ func (s *settings) activate() {
 	window.Present()
 }
 
-// buildContent assembles the device/rooms/discovery UI and returns its root
+// buildContent assembles the device + discovery UI and returns its root
 // widget, without creating a window or application. runSettings' activate wraps
 // it in a standalone window; the desktop app embeds it as a tab.
 func (s *settings) buildContent() *gtk.ScrolledWindow {
@@ -111,24 +107,24 @@ func (s *settings) buildContent() *gtk.ScrolledWindow {
 
 	// --- Edit form ---
 	s.nameEntry = adw.NewEntryRow()
-	s.nameEntry.SetTitle("Nombre")
+	s.nameEntry.SetTitle("Name")
 	s.ipEntry = adw.NewEntryRow()
-	s.ipEntry.SetTitle("Dirección IP")
+	s.ipEntry.SetTitle("IP address")
 	s.idEntry = adw.NewEntryRow()
 	s.idEntry.SetTitle("Device ID")
 	s.keyEntry = adw.NewEntryRow()
 	s.keyEntry.SetTitle("Local Key")
 
 	form := adw.NewPreferencesGroup()
-	form.SetTitle("Datos del dispositivo")
+	form.SetTitle("Device details")
 	form.Add(s.nameEntry)
 	form.Add(s.ipEntry)
 	form.Add(s.idEntry)
 	form.Add(s.keyEntry)
 
-	addBtn := gtk.NewButtonWithLabel("Añadir / Actualizar")
+	addBtn := gtk.NewButtonWithLabel("Add / Update")
 	addBtn.ConnectClicked(func() { s.upsert() })
-	removeBtn := gtk.NewButtonWithLabel("Eliminar")
+	removeBtn := gtk.NewButtonWithLabel("Remove")
 	removeBtn.ConnectClicked(func() { s.remove() })
 	formButtons := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	formButtons.SetHAlign(gtk.AlignEnd)
@@ -136,7 +132,7 @@ func (s *settings) buildContent() *gtk.ScrolledWindow {
 	formButtons.Append(addBtn)
 
 	// --- Discovery panel ---
-	s.scanBtn = gtk.NewButtonWithLabel("Buscar dispositivos")
+	s.scanBtn = gtk.NewButtonWithLabel("Scan for devices")
 	s.scanBtn.ConnectClicked(func() { s.scan() })
 	s.scanList = gtk.NewListBox()
 	s.scanList.ConnectRowSelected(func(row *gtk.ListBoxRow) {
@@ -149,47 +145,16 @@ func (s *settings) buildContent() *gtk.ScrolledWindow {
 	scanScroll.SetMinContentHeight(120)
 	scanScroll.SetVExpand(true)
 
-	// --- Rooms panel ---
-	s.roomList = gtk.NewListBox()
-	s.roomList.ConnectRowSelected(func(row *gtk.ListBoxRow) {
-		if row == nil {
-			s.roomSelected = -1
-			return
-		}
-		s.roomSelected = row.Index()
-		s.loadRoom()
-	})
-	roomScroll := gtk.NewScrolledWindow()
-	roomScroll.SetChild(s.roomList)
-	roomScroll.SetMinContentHeight(90)
-	roomScroll.SetVExpand(true)
-
-	s.roomNameEntry = gtk.NewEntry()
-	s.roomNameEntry.SetPlaceholderText("Nombre de la sala")
-	s.roomNameEntry.SetHExpand(true)
-
-	roomAddBtn := gtk.NewButtonWithLabel("Añadir / Renombrar")
-	roomAddBtn.ConnectClicked(func() { s.upsertRoom() })
-	roomRemoveBtn := gtk.NewButtonWithLabel("Eliminar sala")
-	roomRemoveBtn.ConnectClicked(func() { s.removeRoom() })
-	roomButtons := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	roomButtons.Append(s.roomNameEntry)
-	roomButtons.Append(roomRemoveBtn)
-	roomButtons.Append(roomAddBtn)
-
-	// Membership checkboxes: which devices belong to the selected room.
-	s.memberBox = gtk.NewBox(gtk.OrientationVertical, 2)
-	memberScroll := gtk.NewScrolledWindow()
-	memberScroll.SetChild(s.memberBox)
-	memberScroll.SetMinContentHeight(90)
-	memberScroll.SetVExpand(true)
+	// Room management lives in the Rooms tab now (see buildRoomManagement in
+	// app.go); the settings UI only edits devices + discovery. It still keeps
+	// the rooms slice so a standalone -config save doesn't clobber them.
 
 	// --- Status + window buttons ---
 	s.status = gtk.NewLabel("")
 	s.status.SetXAlign(0.0)
 	s.status.SetWrap(true)
 
-	saveBtn := gtk.NewButtonWithLabel("Guardar")
+	saveBtn := gtk.NewButtonWithLabel("Save")
 	saveBtn.AddCSSClass("suggested-action")
 	saveBtn.ConnectClicked(func() { s.save() })
 	winButtons := gtk.NewBox(gtk.OrientationHorizontal, 8)
@@ -197,7 +162,7 @@ func (s *settings) buildContent() *gtk.ScrolledWindow {
 	// The Cerrar button only makes sense in the standalone window; when the
 	// settings UI is embedded as a tab (no s.window) there is nothing to close.
 	if s.window != nil {
-		closeBtn := gtk.NewButtonWithLabel("Cerrar")
+		closeBtn := gtk.NewButtonWithLabel("Close")
 		closeBtn.ConnectClicked(func() { s.window.Close() })
 		winButtons.Append(closeBtn)
 	}
@@ -205,22 +170,13 @@ func (s *settings) buildContent() *gtk.ScrolledWindow {
 
 	// --- Layout ---
 	devicesGroup := adw.NewPreferencesGroup()
-	devicesGroup.SetTitle("Dispositivos")
+	devicesGroup.SetTitle("Devices")
 	devicesGroup.Add(listScroll)
 
 	discoveryGroup := adw.NewPreferencesGroup()
-	discoveryGroup.SetTitle("Descubrimiento")
+	discoveryGroup.SetTitle("Discovery")
 	discoveryGroup.SetHeaderSuffix(s.scanBtn)
 	discoveryGroup.Add(scanScroll)
-
-	roomsGroup := adw.NewPreferencesGroup()
-	roomsGroup.SetTitle("Salas")
-	roomsGroup.Add(roomScroll)
-	roomsGroup.Add(roomButtons)
-
-	membersGroup := adw.NewPreferencesGroup()
-	membersGroup.SetTitle("Dispositivos en la sala")
-	membersGroup.Add(memberScroll)
 
 	content := gtk.NewBox(gtk.OrientationVertical, 18)
 	content.SetMarginTop(16)
@@ -231,8 +187,6 @@ func (s *settings) buildContent() *gtk.ScrolledWindow {
 	content.Append(form)
 	content.Append(formButtons)
 	content.Append(discoveryGroup)
-	content.Append(roomsGroup)
-	content.Append(membersGroup)
 	content.Append(s.status)
 	content.Append(winButtons)
 
@@ -245,7 +199,6 @@ func (s *settings) buildContent() *gtk.ScrolledWindow {
 	contentScroll.SetVExpand(true)
 
 	s.refreshList()
-	s.refreshRoomList()
 	return contentScroll
 }
 
@@ -261,7 +214,7 @@ func (s *settings) refreshList() {
 	for _, d := range s.devices {
 		name := d.Name
 		if name == "" {
-			name = "(sin nombre)"
+			name = "(unnamed)"
 		}
 		label := gtk.NewLabel(fmt.Sprintf("%s — %s", name, d.IPAddress))
 		label.SetXAlign(0.0)
@@ -269,9 +222,6 @@ func (s *settings) refreshList() {
 		label.SetMarginBottom(4)
 		label.SetMarginStart(6)
 		s.list.Append(label)
-	}
-	if s.memberBox != nil {
-		s.refreshMembers()
 	}
 }
 
@@ -297,135 +247,32 @@ func (s *settings) formDevice() Device {
 func (s *settings) upsert() {
 	d := s.formDevice()
 	if d.DeviceID == "" {
-		s.setStatus("Device ID es obligatorio.")
+		s.setStatus("Device ID is required.")
 		return
 	}
 	for i := range s.devices {
 		if s.devices[i].DeviceID == d.DeviceID {
 			s.devices[i] = d
 			s.refreshList()
-			s.setStatus(fmt.Sprintf("Actualizado: %s", d.DeviceID))
+			s.setStatus(fmt.Sprintf("Updated: %s", d.DeviceID))
 			return
 		}
 	}
 	s.devices = append(s.devices, d)
 	s.refreshList()
-	s.setStatus(fmt.Sprintf("Añadido: %s", d.DeviceID))
+	s.setStatus(fmt.Sprintf("Added: %s", d.DeviceID))
 }
 
 func (s *settings) remove() {
 	if s.selected < 0 || s.selected >= len(s.devices) {
-		s.setStatus("Selecciona un dispositivo para eliminar.")
+		s.setStatus("Select a device to remove.")
 		return
 	}
 	removed := s.devices[s.selected]
 	s.devices = append(s.devices[:s.selected], s.devices[s.selected+1:]...)
 	s.selected = -1
 	s.refreshList()
-	s.setStatus(fmt.Sprintf("Eliminado: %s", removed.DeviceID))
-}
-
-// refreshRoomList rebuilds the room ListBox from the in-memory rooms slice.
-func (s *settings) refreshRoomList() {
-	for {
-		row := s.roomList.RowAtIndex(0)
-		if row == nil {
-			break
-		}
-		s.roomList.Remove(row)
-	}
-	for _, r := range s.rooms {
-		name := r.Name
-		if name == "" {
-			name = "(sin nombre)"
-		}
-		label := gtk.NewLabel(fmt.Sprintf("%s — %d dispositivos", name, len(r.Devices)))
-		label.SetXAlign(0.0)
-		label.SetMarginTop(4)
-		label.SetMarginBottom(4)
-		label.SetMarginStart(6)
-		s.roomList.Append(label)
-	}
-	s.refreshMembers()
-}
-
-// loadRoom populates the room name entry and membership checkboxes from the
-// selected room.
-func (s *settings) loadRoom() {
-	if s.roomSelected < 0 || s.roomSelected >= len(s.rooms) {
-		s.roomNameEntry.SetText("")
-	} else {
-		s.roomNameEntry.SetText(s.rooms[s.roomSelected].Name)
-	}
-	s.refreshMembers()
-}
-
-// refreshMembers rebuilds the membership checkbox list for the selected room.
-// Each device gets a check button; toggling it adds or removes the device_id
-// from the room's Devices slice.
-func (s *settings) refreshMembers() {
-	for {
-		child := s.memberBox.FirstChild()
-		if child == nil {
-			break
-		}
-		s.memberBox.Remove(child)
-	}
-	if s.roomSelected < 0 || s.roomSelected >= len(s.rooms) {
-		return
-	}
-	room := &s.rooms[s.roomSelected]
-	for _, d := range s.devices {
-		id := d.DeviceID
-		label := d.Name
-		if label == "" {
-			label = id
-		}
-		check := gtk.NewCheckButtonWithLabel(label)
-		check.SetActive(roomHasDevice(room, id))
-		check.ConnectToggled(func() {
-			if check.Active() {
-				addRoomDevice(room, id)
-			} else {
-				removeRoomDevice(room, id)
-			}
-			s.setStatus(fmt.Sprintf("Sala «%s»: %d dispositivos", room.Name, len(room.Devices)))
-		})
-		s.memberBox.Append(check)
-	}
-}
-
-// upsertRoom adds a new room or renames the selected one. A blank name is
-// rejected.
-func (s *settings) upsertRoom() {
-	name := s.roomNameEntry.Text()
-	if name == "" {
-		s.setStatus("El nombre de la sala es obligatorio.")
-		return
-	}
-	if s.roomSelected >= 0 && s.roomSelected < len(s.rooms) {
-		s.rooms[s.roomSelected].Name = name
-		s.refreshRoomList()
-		s.setStatus(fmt.Sprintf("Sala renombrada: %s", name))
-		return
-	}
-	s.rooms = append(s.rooms, Room{Name: name})
-	s.roomSelected = len(s.rooms) - 1
-	s.refreshRoomList()
-	s.setStatus(fmt.Sprintf("Sala añadida: %s", name))
-}
-
-func (s *settings) removeRoom() {
-	if s.roomSelected < 0 || s.roomSelected >= len(s.rooms) {
-		s.setStatus("Selecciona una sala para eliminar.")
-		return
-	}
-	removed := s.rooms[s.roomSelected]
-	s.rooms = append(s.rooms[:s.roomSelected], s.rooms[s.roomSelected+1:]...)
-	s.roomSelected = -1
-	s.roomNameEntry.SetText("")
-	s.refreshRoomList()
-	s.setStatus(fmt.Sprintf("Sala eliminada: %s", removed.Name))
+	s.setStatus(fmt.Sprintf("Removed: %s", removed.DeviceID))
 }
 
 func roomHasDevice(r *Room, id string) bool {
@@ -457,14 +304,18 @@ func (s *settings) save() {
 	if s.scenesFn != nil {
 		scenes = s.scenesFn() // pull the owner's current scenes
 	}
-	if err := saveConfig(s.configPath, s.devices, s.rooms, scenes); err != nil {
-		s.setStatus("Error al guardar: " + err.Error())
+	rooms := s.rooms
+	if s.roomsFn != nil {
+		rooms = s.roomsFn() // pull the owner's current rooms (Rooms tab owns them)
+	}
+	if err := saveConfig(s.configPath, s.devices, rooms, scenes); err != nil {
+		s.setStatus("Save failed: " + err.Error())
 		return
 	}
 	if s.onSaved != nil {
 		s.onSaved()
 	}
-	s.setStatus(fmt.Sprintf("Guardado en %s", s.configPath))
+	s.setStatus(fmt.Sprintf("Saved to %s", s.configPath))
 }
 
 func (s *settings) setStatus(msg string) {
@@ -484,7 +335,7 @@ var scannedRows []scannedRow
 // list via IdleAdd. Scan errors are surfaced inline and are non-fatal.
 func (s *settings) scan() {
 	s.scanBtn.SetSensitive(false)
-	s.setStatus("Buscando…")
+	s.setStatus("Scanning…")
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
 		defer cancel()
@@ -492,7 +343,7 @@ func (s *settings) scan() {
 		coreglib.IdleAdd(func() {
 			s.scanBtn.SetSensitive(true)
 			if err != nil {
-				s.setStatus("Error de búsqueda: " + err.Error())
+				s.setStatus("Scan error: " + err.Error())
 				return
 			}
 			s.showScanResults(devs)
@@ -522,7 +373,7 @@ func (s *settings) showScanResults(devs []discovery.Device) {
 
 		suffix := ""
 		if present {
-			suffix = "  (ya añadido)"
+			suffix = "  (already added)"
 		}
 		label := gtk.NewLabel(fmt.Sprintf("%s — %s  v%s%s", d.ID, d.IP, d.Version, suffix))
 		label.SetXAlign(0.0)
@@ -531,10 +382,10 @@ func (s *settings) showScanResults(devs []discovery.Device) {
 	}
 
 	if len(devs) == 0 {
-		s.setStatus("No se encontraron dispositivos.")
+		s.setStatus("No devices found.")
 		return
 	}
-	s.setStatus(fmt.Sprintf("Encontrados %d dispositivo(s). Selecciona uno para rellenar el formulario.", len(devs)))
+	s.setStatus(fmt.Sprintf("Found %d device(s). Select one to fill in the form.", len(devs)))
 }
 
 // pickDiscovered pre-fills IP + Device ID from a discovered device; the user
@@ -548,8 +399,8 @@ func (s *settings) pickDiscovered(index int) {
 	s.idEntry.SetText(d.ID)
 	if !scannedRows[index].present {
 		s.keyEntry.GrabFocus()
-		s.setStatus("Introduce el Local Key y pulsa Añadir.")
+		s.setStatus("Enter the Local Key and press Add.")
 	} else {
-		s.setStatus("Este dispositivo ya está en la configuración.")
+		s.setStatus("This device is already in the configuration.")
 	}
 }

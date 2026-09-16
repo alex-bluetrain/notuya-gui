@@ -2,12 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/cairo"
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
-	coreglib "github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
@@ -40,6 +40,32 @@ type desktopApp struct {
 	scenesGroup  *adw.PreferencesGroup
 	sceneRows    []*adw.ActionRow
 	scenesStatus *gtk.Label
+
+	// roomRows backs the Rooms tab's control section: one summary row per
+	// room, updated live as member panels refresh or are toggled.
+	roomRows []*roomRow
+
+	// Room-management widgets (moved out of the Settings tab). manageGroup
+	// holds one editable ActionRow per room; roomNameEntry + membersGroup edit
+	// the currently selected room. roomSelected indexes a.cfg.Rooms (-1 = new).
+	manageGroup   *adw.PreferencesGroup
+	membersGroup  *adw.PreferencesGroup
+	roomNameEntry *gtk.Entry
+	roomStatus    *gtk.Label
+	roomSelected  int
+	manageRows    []*adw.ActionRow
+	memberRows    []*adw.ActionRow
+}
+
+// roomRow is one row in the Rooms tab: a master on/off switch plus a live
+// summary of how many of the room's lights are on.
+type roomRow struct {
+	row     *adw.ActionRow
+	toggle  *gtk.Switch
+	members []*devicePanel
+	// suppress guards the switch's state-set handler while we set it
+	// programmatically from a summary update.
+	suppress bool
 }
 
 func runApp(configPath string, cfg *Config) {
@@ -55,7 +81,7 @@ func runApp(configPath string, cfg *Config) {
 
 func (a *desktopApp) activate() {
 	window := adw.NewApplicationWindow(&a.app.Application)
-	window.SetTitle("Luces")
+	window.SetTitle("Lights")
 	window.SetDefaultSize(520, 720)
 	a.window = window
 
@@ -63,7 +89,7 @@ func (a *desktopApp) activate() {
 	a.byID = make(map[string]*control, len(a.cfg.Devices))
 
 	// Build one control per device, keyed by device_id so a room's panels
-	// reuse the same session as the "Sin sala" listing would.
+	// reuse the same session as the "No room" listing would.
 	panelByID := make(map[string]*devicePanel, len(a.cfg.Devices))
 	for i := range a.cfg.Devices {
 		ctl := newControl(a.cfg.Devices[i])
@@ -78,9 +104,10 @@ func (a *desktopApp) activate() {
 	// selects between them (the Adwaita replacement for a Notebook's tabs).
 	stack := adw.NewViewStack()
 	stack.SetVExpand(true)
-	stack.AddTitledWithIcon(a.buildLightsTab(panelByID), "lights", "Luces", "weather-clear-symbolic")
-	stack.AddTitledWithIcon(a.buildScenesTab(), "scenes", "Escenas", "starred-symbolic")
-	stack.AddTitledWithIcon(a.buildSettingsTab(), "settings", "Ajustes", "emblem-system-symbolic")
+	stack.AddTitledWithIcon(a.buildRoomsTab(panelByID), "rooms", "Rooms", "user-home-symbolic")
+	stack.AddTitledWithIcon(a.buildLightsTab(panelByID), "lights", "Lights", "weather-clear-symbolic")
+	stack.AddTitledWithIcon(a.buildScenesTab(), "scenes", "Scenes", "starred-symbolic")
+	stack.AddTitledWithIcon(a.buildSettingsTab(), "settings", "Settings", "emblem-system-symbolic")
 
 	switcher := adw.NewViewSwitcher()
 	switcher.SetPolicy(adw.ViewSwitcherPolicyWide)
@@ -109,7 +136,7 @@ func (a *desktopApp) activate() {
 }
 
 // buildLightsTab builds the room-grouped device panels (the original app
-// content) and returns the scrolled widget for the "Luces" tab.
+// content) and returns the scrolled widget for the "Lights" tab.
 func (a *desktopApp) buildLightsTab(byID map[string]*devicePanel) *gtk.ScrolledWindow {
 	content := gtk.NewBox(gtk.OrientationVertical, 18)
 	content.SetMarginTop(18)
@@ -133,25 +160,333 @@ func (a *desktopApp) buildLightsTab(byID map[string]*devicePanel) *gtk.ScrolledW
 	return scroll
 }
 
+// buildRoomsTab builds a mobile-style overview: one row per room with an icon,
+// the room name, a live "N of M lights on" summary, and a master switch that
+// powers the whole room on or off. It reuses the same controls as the Lights
+// tab (looked up by device_id) so no extra sessions are opened.
+func (a *desktopApp) buildRoomsTab(byID map[string]*devicePanel) *gtk.ScrolledWindow {
+	group := adw.NewPreferencesGroup()
+	group.SetTitle("My rooms")
+
+	for _, grp := range groupByRoom(a.cfg) {
+		members := make([]*devicePanel, 0, len(grp.Devices))
+		for _, dev := range grp.Devices {
+			if panel, ok := byID[dev.DeviceID]; ok {
+				members = append(members, panel)
+			}
+		}
+
+		rr := &roomRow{members: members}
+		rr.row = adw.NewActionRow()
+		rr.row.SetTitle(grp.Name)
+		icon := gtk.NewImageFromIconName("user-home-symbolic")
+		rr.row.AddPrefix(icon)
+
+		rr.toggle = gtk.NewSwitch()
+		rr.toggle.SetVAlign(gtk.AlignCenter)
+		rr.toggle.ConnectStateSet(func(state bool) bool {
+			if rr.suppress {
+				return false
+			}
+			a.groupPower(rr.members, state)
+			// Optimistically reflect the new state in each member panel's
+			// switch and the summary; a later refresh reconciles.
+			for _, p := range rr.members {
+				p.setPowerOptimistic(state)
+			}
+			rr.updateSummary()
+			return false
+		})
+		rr.row.AddSuffix(rr.toggle)
+
+		// When any member panel refreshes or is toggled, recompute this
+		// room's summary.
+		for _, p := range members {
+			prevRefresh := p.onRefresh
+			p.onRefresh = func() {
+				if prevRefresh != nil {
+					prevRefresh()
+				}
+				rr.updateSummary()
+			}
+			prevToggle := p.onToggle
+			p.onToggle = func(on bool) {
+				if prevToggle != nil {
+					prevToggle(on)
+				}
+				rr.updateSummary()
+			}
+		}
+
+		rr.updateSummary()
+		group.Add(rr.row)
+		a.roomRows = append(a.roomRows, rr)
+	}
+
+	clamp := adw.NewClamp()
+	clamp.SetMaximumSize(600)
+
+	box := gtk.NewBox(gtk.OrientationVertical, 12)
+	box.SetMarginTop(18)
+	box.SetMarginBottom(18)
+	box.SetMarginStart(12)
+	box.SetMarginEnd(12)
+	box.Append(group)
+	box.Append(a.buildRoomManagement())
+	clamp.SetChild(box)
+
+	scroll := gtk.NewScrolledWindow()
+	scroll.SetVExpand(true)
+	scroll.SetChild(clamp)
+	return scroll
+}
+
+// buildRoomManagement builds the room create/rename/delete + device-assignment
+// UI, moved out of the Settings tab so everything room-related lives in one
+// place. It edits a.cfg.Rooms directly and persists via saveCfg. Structural
+// changes (a room's membership) are reflected in the Lights/Rooms control views
+// on the next launch, matching how device edits in Settings behave.
+func (a *desktopApp) buildRoomManagement() gtk.Widgetter {
+	a.roomSelected = -1
+
+	a.manageGroup = adw.NewPreferencesGroup()
+	a.manageGroup.SetTitle("Manage rooms")
+
+	a.roomNameEntry = gtk.NewEntry()
+	a.roomNameEntry.SetPlaceholderText("Room name")
+	a.roomNameEntry.SetHExpand(true)
+	addBtn := gtk.NewButtonWithLabel("Add / Rename")
+	addBtn.ConnectClicked(func() { a.upsertRoom() })
+	entryRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	entryRow.SetMarginTop(8)
+	entryRow.Append(a.roomNameEntry)
+	entryRow.Append(addBtn)
+	a.manageGroup.Add(entryRow)
+
+	a.membersGroup = adw.NewPreferencesGroup()
+	a.membersGroup.SetTitle("Devices in room")
+
+	a.roomStatus = gtk.NewLabel("")
+	a.roomStatus.SetXAlign(0.0)
+	a.roomStatus.SetWrap(true)
+	a.roomStatus.AddCSSClass("dim-label")
+	a.roomStatus.SetMarginTop(4)
+
+	a.refreshManageRooms()
+
+	box := gtk.NewBox(gtk.OrientationVertical, 12)
+	box.Append(a.manageGroup)
+	box.Append(a.membersGroup)
+	box.Append(a.roomStatus)
+	return box
+}
+
+// refreshManageRooms rebuilds the editable room list (one ActionRow per room
+// with Select + Delete) from a.cfg.Rooms.
+func (a *desktopApp) refreshManageRooms() {
+	for _, row := range a.manageRows {
+		a.manageGroup.Remove(row)
+	}
+	a.manageRows = a.manageRows[:0]
+
+	for i := range a.cfg.Rooms {
+		idx := i
+		r := a.cfg.Rooms[idx]
+		row := adw.NewActionRow()
+		name := r.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
+		row.SetTitle(name)
+		row.SetSubtitle(fmt.Sprintf("%d devices", len(r.Devices)))
+		row.SetActivatable(true)
+
+		del := gtk.NewButtonFromIconName("user-trash-symbolic")
+		del.SetVAlign(gtk.AlignCenter)
+		del.AddCSSClass("flat")
+		del.ConnectClicked(func() { a.removeRoom(idx) })
+		row.AddSuffix(del)
+
+		row.ConnectActivated(func() { a.selectRoom(idx) })
+
+		a.manageGroup.Add(row)
+		a.manageRows = append(a.manageRows, row)
+	}
+
+	if a.roomSelected >= len(a.cfg.Rooms) {
+		a.roomSelected = -1
+	}
+	a.refreshMembers()
+}
+
+// selectRoom marks a room as the edit target, loads its name into the entry,
+// and rebuilds the membership toggles.
+func (a *desktopApp) selectRoom(idx int) {
+	a.roomSelected = idx
+	if idx >= 0 && idx < len(a.cfg.Rooms) {
+		a.roomNameEntry.SetText(a.cfg.Rooms[idx].Name)
+	}
+	a.refreshMembers()
+}
+
+// refreshMembers rebuilds the membership checkboxes for the selected room.
+func (a *desktopApp) refreshMembers() {
+	for _, row := range a.memberRows {
+		a.membersGroup.Remove(row)
+	}
+	a.memberRows = a.memberRows[:0]
+
+	if a.roomSelected < 0 || a.roomSelected >= len(a.cfg.Rooms) {
+		a.membersGroup.SetDescription("Select a room to edit its devices.")
+		return
+	}
+	a.membersGroup.SetDescription("")
+	room := &a.cfg.Rooms[a.roomSelected]
+	for i := range a.cfg.Devices {
+		d := a.cfg.Devices[i]
+		id := d.DeviceID
+		label := d.Name
+		if label == "" {
+			label = id
+		}
+		row := adw.NewActionRow()
+		row.SetTitle(label)
+		check := gtk.NewCheckButton()
+		check.SetVAlign(gtk.AlignCenter)
+		check.SetActive(roomHasDevice(room, id))
+		check.ConnectToggled(func() {
+			if check.Active() {
+				addRoomDevice(room, id)
+			} else {
+				removeRoomDevice(room, id)
+			}
+			a.persistRooms(fmt.Sprintf("Room “%s”: %d devices", room.Name, len(room.Devices)))
+			a.syncManageSubtitle(a.roomSelected)
+		})
+		row.AddSuffix(check)
+		row.SetActivatableWidget(check)
+		a.membersGroup.Add(row)
+		a.memberRows = append(a.memberRows, row)
+	}
+}
+
+// upsertRoom adds a new room or renames the selected one, then persists.
+func (a *desktopApp) upsertRoom() {
+	name := a.roomNameEntry.Text()
+	if name == "" {
+		a.setRoomStatus("Room name is required.")
+		return
+	}
+	if a.roomSelected >= 0 && a.roomSelected < len(a.cfg.Rooms) {
+		a.cfg.Rooms[a.roomSelected].Name = name
+		a.refreshManageRooms()
+		a.persistRooms(fmt.Sprintf("Room renamed: %s", name))
+		return
+	}
+	a.cfg.Rooms = append(a.cfg.Rooms, Room{Name: name})
+	a.roomSelected = len(a.cfg.Rooms) - 1
+	a.refreshManageRooms()
+	a.persistRooms(fmt.Sprintf("Room added: %s", name))
+}
+
+// removeRoom deletes a room and persists.
+func (a *desktopApp) removeRoom(idx int) {
+	if idx < 0 || idx >= len(a.cfg.Rooms) {
+		return
+	}
+	removed := a.cfg.Rooms[idx]
+	a.cfg.Rooms = append(a.cfg.Rooms[:idx], a.cfg.Rooms[idx+1:]...)
+	if a.roomSelected == idx {
+		a.roomSelected = -1
+		a.roomNameEntry.SetText("")
+	} else if a.roomSelected > idx {
+		a.roomSelected--
+	}
+	a.refreshManageRooms()
+	a.persistRooms(fmt.Sprintf("Room removed: %s", removed.Name))
+}
+
+// syncManageSubtitle updates one manage-row's "N devices" subtitle after a
+// membership change, without a full rebuild.
+func (a *desktopApp) syncManageSubtitle(idx int) {
+	if idx < 0 || idx >= len(a.manageRows) || idx >= len(a.cfg.Rooms) {
+		return
+	}
+	a.manageRows[idx].SetSubtitle(fmt.Sprintf("%d devices", len(a.cfg.Rooms[idx].Devices)))
+}
+
+// persistRooms writes the current config to disk and reports status.
+func (a *desktopApp) persistRooms(okMsg string) {
+	if err := saveConfig(a.configPath, a.cfg.Devices, a.cfg.Rooms, a.cfg.Scenes); err != nil {
+		a.setRoomStatus("Save failed: " + err.Error())
+		return
+	}
+	a.setRoomStatus(okMsg)
+}
+
+func (a *desktopApp) setRoomStatus(msg string) {
+	if a.roomStatus != nil {
+		a.roomStatus.SetText(msg)
+	}
+}
+
+// updateSummary recomputes the room's subtitle ("All lights on" / "N of M
+// lights on" / "All lights off") and syncs the master switch, without firing
+// the switch's handler.
+func (rr *roomRow) updateSummary() {
+	total := len(rr.members)
+	if total == 0 {
+		rr.row.SetSubtitle("No lights")
+		return
+	}
+	on := 0
+	known := 0
+	for _, p := range rr.members {
+		if p.hasState {
+			known++
+			if p.lastOn {
+				on++
+			}
+		}
+	}
+
+	var subtitle string
+	switch {
+	case known == 0:
+		subtitle = "…"
+	case on == 0:
+		subtitle = "All lights off"
+	case on == total:
+		subtitle = "All lights on"
+	default:
+		subtitle = fmt.Sprintf("%d of %d lights on", on, total)
+	}
+	rr.row.SetSubtitle(subtitle)
+
+	rr.suppress = true
+	rr.toggle.SetActive(on > 0)
+	rr.suppress = false
+}
+
 // buildSettingsTab embeds the settings UI as a tab. It seeds a settings
 // instance from a.cfg and routes its Guardar back through a.cfg so the scenes
 // tab and settings tab never clobber each other's slice of the config.
 func (a *desktopApp) buildSettingsTab() gtk.Widgetter {
 	s := &settings{
-		configPath:   a.configPath,
-		devices:      append([]Device(nil), a.cfg.Devices...),
-		rooms:        append([]Room(nil), a.cfg.Rooms...),
-		scenes:       a.cfg.Scenes,
-		selected:     -1,
-		roomSelected: -1,
+		configPath: a.configPath,
+		devices:    append([]Device(nil), a.cfg.Devices...),
+		rooms:      a.cfg.Rooms,
+		scenes:     a.cfg.Scenes,
+		selected:   -1,
 	}
-	// Always save the owner's current scenes, and mirror settings' edits back
-	// into a.cfg on save, so the scenes tab and settings tab never clobber each
-	// other's slice. settings.save writes the full (devices, rooms, scenes) triple.
+	// Pull the owner's current scenes and rooms at save time (the Scenes tab
+	// and the Rooms tab own those slices), and mirror settings' device edits
+	// back into a.cfg on save. settings.save writes the full (devices, rooms,
+	// scenes) triple.
 	s.scenesFn = func() []Scene { return a.cfg.Scenes }
+	s.roomsFn = func() []Room { return a.cfg.Rooms }
 	s.onSaved = func() {
 		a.cfg.Devices = s.devices
-		a.cfg.Rooms = s.rooms
 	}
 	return s.buildContent()
 }
@@ -175,10 +510,10 @@ func (a *desktopApp) buildRoomSection(group roomGroup, byID map[string]*devicePa
 	// "Todo ON/OFF" live in the group's header suffix (top-right of the card).
 	actions := gtk.NewBox(gtk.OrientationHorizontal, 6)
 	actions.SetVAlign(gtk.AlignCenter)
-	allOn := gtk.NewButtonWithLabel("Todo ON")
+	allOn := gtk.NewButtonWithLabel("All on")
 	allOn.AddCSSClass("flat")
 	allOn.ConnectClicked(func() { a.groupPower(members, true) })
-	allOff := gtk.NewButtonWithLabel("Todo OFF")
+	allOff := gtk.NewButtonWithLabel("All off")
 	allOff.AddCSSClass("flat")
 	allOff.ConnectClicked(func() { a.groupPower(members, false) })
 	actions.Append(allOn)
@@ -204,9 +539,9 @@ func (a *desktopApp) groupPower(members []*devicePanel, on bool) {
 	}
 }
 
-// buildScenesTab builds the "Escenas" tab: a list of saved scenes (click a row
-// to apply it), a "Guardar escena" button that snapshots selected lights, and
-// an "Eliminar" button that removes the selected scene.
+// buildScenesTab builds the "Scenes" tab: a list of saved scenes (click a row
+// to apply it), a "New scene" button that opens the editor, and per-row
+// "Apply"/edit/delete buttons.
 func (a *desktopApp) buildScenesTab() *gtk.ScrolledWindow {
 	clamp := adw.NewClamp()
 	clamp.SetMaximumSize(600)
@@ -219,13 +554,13 @@ func (a *desktopApp) buildScenesTab() *gtk.ScrolledWindow {
 	box.SetMarginEnd(14)
 
 	a.scenesGroup = adw.NewPreferencesGroup()
-	a.scenesGroup.SetTitle("Escenas")
-	a.scenesGroup.SetDescription("Toca «Aplicar» para restaurar una escena guardada")
+	a.scenesGroup.SetTitle("Scenes")
+	a.scenesGroup.SetDescription("Tap “Apply” to restore a saved scene")
 
-	saveBtn := gtk.NewButtonWithLabel("Guardar escena")
+	saveBtn := gtk.NewButtonWithLabel("New scene")
 	saveBtn.AddCSSClass("suggested-action")
 	saveBtn.SetVAlign(gtk.AlignCenter)
-	saveBtn.ConnectClicked(func() { a.openSaveSceneDialog() })
+	saveBtn.ConnectClicked(func() { a.openSceneEditor(-1) })
 	a.scenesGroup.SetHeaderSuffix(saveBtn)
 
 	a.scenesStatus = gtk.NewLabel("")
@@ -246,7 +581,7 @@ func (a *desktopApp) buildScenesTab() *gtk.ScrolledWindow {
 }
 
 // refreshScenesList rebuilds the scenes boxed list from a.cfg.Scenes, one
-// ActionRow per scene with per-row "Aplicar" and delete buttons.
+// ActionRow per scene with per-row "Apply" and delete buttons.
 func (a *desktopApp) refreshScenesList() {
 	for _, row := range a.sceneRows {
 		a.scenesGroup.Remove(row)
@@ -255,8 +590,8 @@ func (a *desktopApp) refreshScenesList() {
 
 	if len(a.cfg.Scenes) == 0 {
 		row := adw.NewActionRow()
-		row.SetTitle("Sin escenas guardadas")
-		row.SetSubtitle("Guarda una para empezar")
+		row.SetTitle("No saved scenes")
+		row.SetSubtitle("Save one to get started")
 		a.scenesGroup.Add(row)
 		a.sceneRows = append(a.sceneRows, row)
 		return
@@ -268,17 +603,24 @@ func (a *desktopApp) refreshScenesList() {
 		row := adw.NewActionRow()
 		row.SetTitle(sc.Name)
 
-		apply := gtk.NewButtonWithLabel("Aplicar")
+		apply := gtk.NewButtonWithLabel("Apply")
 		apply.SetVAlign(gtk.AlignCenter)
 		apply.ConnectClicked(func() { a.applySceneAt(idx) })
+
+		edit := gtk.NewButtonFromIconName("document-edit-symbolic")
+		edit.SetVAlign(gtk.AlignCenter)
+		edit.AddCSSClass("flat")
+		edit.SetTooltipText("Edit scene")
+		edit.ConnectClicked(func() { a.openSceneEditor(idx) })
 
 		del := gtk.NewButtonFromIconName("user-trash-symbolic")
 		del.SetVAlign(gtk.AlignCenter)
 		del.AddCSSClass("flat")
-		del.SetTooltipText("Eliminar escena")
+		del.SetTooltipText("Delete scene")
 		del.ConnectClicked(func() { a.deleteSceneAt(idx) })
 
 		row.AddSuffix(apply)
+		row.AddSuffix(edit)
 		row.AddSuffix(del)
 		a.scenesGroup.Add(row)
 		a.sceneRows = append(a.sceneRows, row)
@@ -291,7 +633,7 @@ func (a *desktopApp) applySceneAt(i int) {
 		return
 	}
 	sc := a.cfg.Scenes[i]
-	a.scenesStatus.SetLabel("Aplicando '" + sc.Name + "'…")
+	a.scenesStatus.SetLabel("Applying “" + sc.Name + "”…")
 	applyScene(sc, a.byID)
 }
 
@@ -303,90 +645,11 @@ func (a *desktopApp) deleteSceneAt(i int) {
 	name := a.cfg.Scenes[i].Name
 	a.cfg.Scenes = append(a.cfg.Scenes[:i:i], a.cfg.Scenes[i+1:]...)
 	if err := a.saveCfg(); err != nil {
-		a.scenesStatus.SetLabel("Error al guardar: " + err.Error())
+		a.scenesStatus.SetLabel("Save failed: " + err.Error())
 		return
 	}
 	a.refreshScenesList()
-	a.scenesStatus.SetLabel("Escena '" + name + "' eliminada")
-}
-
-// openSaveSceneDialog prompts for a name and which lights to include, then
-// captures their current state into a new scene.
-func (a *desktopApp) openSaveSceneDialog() {
-	dialog := adw.NewMessageDialog(&a.window.Window, "Guardar escena", "Elige un nombre y las luces a incluir.")
-
-	content := gtk.NewBox(gtk.OrientationVertical, 8)
-	content.SetMarginTop(6)
-
-	nameEntry := gtk.NewEntry()
-	nameEntry.SetPlaceholderText("Nombre de la escena")
-	content.Append(nameEntry)
-
-	group := adw.NewPreferencesGroup()
-	group.SetTitle("Luces a incluir")
-	checks := make([]*gtk.CheckButton, len(a.cfg.Devices))
-	for i := range a.cfg.Devices {
-		name := a.cfg.Devices[i].Name
-		if name == "" {
-			name = a.cfg.Devices[i].DeviceID
-		}
-		row := adw.NewActionRow()
-		row.SetTitle(name)
-		cb := gtk.NewCheckButton()
-		cb.SetActive(true) // default: all ticked
-		cb.SetVAlign(gtk.AlignCenter)
-		row.AddPrefix(cb)
-		row.SetActivatableWidget(cb)
-		checks[i] = cb
-		group.Add(row)
-	}
-	content.Append(group)
-	dialog.SetExtraChild(content)
-
-	dialog.AddResponse("cancel", "Cancelar")
-	dialog.AddResponse("save", "Guardar")
-	dialog.SetResponseAppearance("save", adw.ResponseSuggested)
-	dialog.SetDefaultResponse("save")
-	dialog.SetCloseResponse("cancel")
-
-	dialog.ConnectResponse(func(response string) {
-		if response == "save" {
-			name := nameEntry.Text()
-			include := make([]bool, len(checks))
-			for i, cb := range checks {
-				include[i] = cb.Active()
-			}
-			a.captureAndSaveScene(name, include)
-		}
-	})
-	dialog.Present()
-}
-
-// captureAndSaveScene snapshots the included lights off the GTK thread, appends
-// the scene, persists, and refreshes the list back on the GTK thread.
-func (a *desktopApp) captureAndSaveScene(name string, include []bool) {
-	if name == "" {
-		a.scenesStatus.SetLabel("La escena necesita un nombre")
-		return
-	}
-	a.scenesStatus.SetLabel("Capturando '" + name + "'…")
-	go func() {
-		scene := captureScene(name, a.controls, include)
-		coreglib.IdleAdd(func() {
-			if len(scene.States) == 0 {
-				a.scenesStatus.SetLabel("No se pudo leer ninguna luz; escena no guardada")
-				return
-			}
-			a.cfg.Scenes = append(a.cfg.Scenes, scene)
-			if err := a.saveCfg(); err != nil {
-				a.cfg.Scenes = a.cfg.Scenes[:len(a.cfg.Scenes)-1]
-				a.scenesStatus.SetLabel("Error al guardar: " + err.Error())
-				return
-			}
-			a.refreshScenesList()
-			a.scenesStatus.SetLabel("Escena '" + name + "' guardada")
-		})
-	}()
+	a.scenesStatus.SetLabel("Scene “" + name + "” deleted")
 }
 
 // saveCfg writes the full (devices, rooms, scenes) triple from a.cfg — the

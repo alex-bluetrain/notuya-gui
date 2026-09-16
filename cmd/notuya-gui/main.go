@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	settingsMode := flag.Bool("config", false, "DEPRECATED: open the standalone settings window (use the in-app Ajustes tab instead)")
+	settingsMode := flag.Bool("config", false, "DEPRECATED: open the standalone settings window (use the in-app Settings tab instead)")
 	pickerMode := flag.Bool("picker", false, "open the layer-shell colour-wheel overlay instead of the desktop app")
 	flag.Parse()
 

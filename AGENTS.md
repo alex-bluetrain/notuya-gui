@@ -111,14 +111,20 @@ Single binary, one module. Files under `cmd/notuya-gui/`:
 main.go          entry point: flag parsing → runApp | runPicker | runSettings
 picker.go        the --picker layer-shell colour-wheel overlay
 app.go           the default desktop window (libadwaita: AdwApplicationWindow +
-                 AdwHeaderBar + AdwViewSwitcher/ViewStack), Luces/Escenas/Ajustes
+                 AdwHeaderBar + AdwViewSwitcher/ViewStack): Lights/Rooms/Scenes/
+                 Settings tabs. Rooms tab = mobile-style summary rows (room name,
+                 "N of M lights on", master switch) reusing the Lights panels,
+                 plus room CRUD (create/rename/delete + membership).
 device_panel.go  per-device control card (AdwActionRow header + power/bright/
                  colour/temp/scene/status; colour wheel is a plain DrawingArea)
 control.go       per-device controller: owns a bulb session, command methods +
-                 Refresh; borrows the streamer for live colour drag
+                 Refresh + ApplyState; borrows the streamer for live colour drag
+scenes.go        scene apply (applyScene) + deviceStatus→SceneState mapping
+scene_editor.go  the Scenes editor: sceneEditor + per-device sceneDeviceRow,
+                 AdwWindow modal with live (destructive) preview
 stream.go        music-mode streamer (used by picker AND app live-drag)
-settings.go      settings window: devices, LAN discovery, room management
-config.go        Config/Device/Room types, groupByRoom, saveConfig
+settings.go      settings window/tab: devices + LAN discovery (rooms live in app.go)
+config.go        Config/Device/Room/Scene types, groupByRoom, saveConfig
 color.go         HSV↔RGB helpers; wheel.go generates/caches the wheel bitmap
 ```
 
@@ -132,6 +138,34 @@ session re-open lazily.
 
 Colour-wheel drawing and the coordinate→(hue,sat) mapping are shared between the
 picker and the panel (`coordsToHSSized`, the cached wheel surface).
+
+The UI is in English. Scenes are editable, not capture-only. **New scene** opens
+`sceneEditor` (`scene_editor.go`) for a new scene; each row's **Edit** button
+reopens it for an existing one. The editor is an `AdwWindow` modal with one
+`sceneDeviceRow` per configured device (include checkbox, power switch,
+Color/White selector, colour wheel + swatch, brightness/temp sliders) that edits
+an in-memory `SceneState`. Preview is **live and destructive**: the row reuses
+the same `control` instances as the Lights tab (via `a.byID`, mutex-serialized —
+no second session per bulb), driving the wheel through `BeginLiveDrag`/
+`UpdateLiveDrag`/`EndLiveDrag` and the sliders/power/mode through the discrete
+setters, all off-thread. Nothing is restored on close. **Save** writes the built
+`[]SceneState` over `a.cfg.Scenes[index]` (or appends when index == -1) and
+persists via `saveCfg`; **Cancel** keeps the bulbs at their last preview.
+
+The **Rooms** tab (`buildRoomsTab`) is a read/control overview built from
+`groupByRoom`: one `roomRow` per room (an `AdwActionRow` with a `user-home`
+icon, the room name, a live "N of M lights on" subtitle, and a master `Switch`).
+Each `roomRow` holds the room's `*devicePanel`s and recomputes its summary from
+their cached `lastOn`/`hasState` whenever a member panel refreshes (`onRefresh`)
+or is toggled (`onToggle`) — no extra device queries. Flipping the master switch
+calls `groupPower` and optimistically syncs each member panel's switch via
+`setPowerOptimistic`. Below the control rows the same tab hosts **room
+management**: a room list, a name entry with add/rename/remove buttons, and
+membership checkboxes for the selected room (`refreshRoomList`, `loadRoomForm`,
+`refreshMembers`, `upsertRoom`, `removeRoom`, all on `desktopApp`). Every edit
+mutates `a.cfg.Rooms` and persists via `a.saveCfg`. Membership changes are
+reflected in the control views on the next launch. The Settings tab no longer
+owns any room UI.
 
 Planned internal split (subject to change as the port lands):
 
@@ -167,13 +201,10 @@ a separate brightness channel).
 
 ## Configuration
 
-Shared with the CLI and daemon — the same `config.json`:
-
-- Config: `~/.config/tuya/config.json` (the `devices` array:
-  `device_id`, `ip_address`, `local_key`, `name`).
+- Config: `~/.config/notuya-gui/config.json` (override with `$NOTUYA_CONFIG`).
+  The `devices` array carries `device_id`, `ip_address`, `local_key`, `name`.
 - Last colour cache: read on open (to revert on cancel), written on a
-  committed exit — the same file `picker.py` and the daemon use, so
-  `GET /color`, the CLI, and the GUI all agree on what is lit.
+  committed exit — a `last-color.txt` beside the config file.
 
 ### Rooms (top-level entity)
 
@@ -194,7 +225,7 @@ contains (a device may belong to several rooms):
 `groupByRoom(cfg)` resolves the `rooms` array into ordered
 `[]roomGroup{Name, []*Device}`: stale `device_id`s (no matching device) are
 skipped, and every device not referenced by any room is appended in a
-trailing synthetic **"Sin sala"** group (computed at load, never written).
+trailing synthetic **"No room"** group (computed at load, never written).
 `saveConfig` serialises `rooms` alongside `devices` via the same
 unknown-key-preserving, atomic round-trip.
 
@@ -202,20 +233,23 @@ unknown-key-preserving, atomic round-trip.
 
 `notuya-gui -config` opens a settings window (an ordinary GTK4 toplevel,
 **not** a layer-shell overlay) instead of the app or picker. It edits the
-shared `config.json`'s `devices` array — add, edit, and remove bulbs — manages
-the `rooms` array (create/rename/remove rooms and assign devices via
-membership checkboxes), and can **discover** bulbs on the LAN via notuya-go's
-`pkg/discovery.Scan` (reused; no UDP code lives here).
+shared `config.json`'s `devices` array — add, edit, and remove bulbs — and can
+**discover** bulbs on the LAN via notuya-go's `pkg/discovery.Scan` (reused; no
+UDP code lives here). Room management (create/rename/remove rooms and assign
+devices) lives in the desktop app's **Rooms** tab, not here; the standalone
+window edits devices only and preserves the `rooms`/`scenes` arrays on save.
+Both the standalone window and the in-app **Settings** tab share
+`settings.buildContent()`.
 
 - **Keys are entered by hand.** LAN discovery yields `device_id` + `ip`
   only; a bulb's `local_key` comes from Tuya's cloud, which this tool
   deliberately does not touch. Clicking a discovered device pre-fills IP +
   Device ID; the user pastes the Local Key.
 - **Writes preserve unknown keys.** `saveConfig` round-trips the file
-  through `map[string]json.RawMessage`, replacing only `devices` and `rooms`,
-  so keys this tool doesn't model (`wallpaper_sync`, theme keys, anything the
-  CLI/daemon own) survive. The write is atomic (temp file + rename) since
-  the config is co-owned.
+  through `map[string]json.RawMessage`, replacing only `devices`, `rooms`, and
+  `scenes`, so keys this tool doesn't model (`wallpaper_sync`, theme keys,
+  anything the CLI/daemon own) survive. The write is atomic (temp file +
+  rename) since the config is co-owned.
 - If the app or picker is launched with **no** config file, it exits with a
   hint pointing at `notuya-gui -config` so a first-run user can create one.
 

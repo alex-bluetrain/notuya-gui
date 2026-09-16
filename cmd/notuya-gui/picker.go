@@ -86,7 +86,7 @@ func (p *picker) activate() {
 
 func (p *picker) showWindow() {
 	window := gtk.NewWindow()
-	window.SetTitle("Luces")
+	window.SetTitle("Lights")
 	p.window = window
 
 	gtk4layershell.InitForWindow(window)
@@ -141,7 +141,7 @@ func (p *picker) showWindow() {
 	// --- Brightness slider ---
 	brightBox := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	brightBox.SetMarginTop(16)
-	brightLabel := gtk.NewLabel("Brillo")
+	brightLabel := gtk.NewLabel("Brightness")
 	brightBox.Append(brightLabel)
 	brightScale := gtk.NewScaleWithRange(gtk.OrientationHorizontal, 1, 100, 1)
 	brightScale.SetValue(float64(p.selBrightness))
@@ -165,7 +165,7 @@ func (p *picker) showWindow() {
 	// --- Transition slider ---
 	transBox := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	transBox.SetMarginTop(12)
-	transLabel := gtk.NewLabel("Transición")
+	transLabel := gtk.NewLabel("Transition")
 	transBox.Append(transLabel)
 	transScale := gtk.NewScaleWithRange(gtk.OrientationHorizontal, 0, float64(device.MaxTransition), 1)
 	transScale.SetValue(float64(p.selTransition))
@@ -186,7 +186,7 @@ func (p *picker) showWindow() {
 	// --- Power switch ---
 	toggleBox := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	toggleBox.SetMarginTop(12)
-	toggleLabel := gtk.NewLabel("Luces")
+	toggleLabel := gtk.NewLabel("Lights")
 	toggleLabel.SetHExpand(true)
 	toggleLabel.SetXAlign(0.0)
 	toggleBox.Append(toggleLabel)
@@ -209,15 +209,15 @@ func (p *picker) showWindow() {
 	buttons := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	buttons.SetMarginTop(20)
 	buttons.SetHAlign(gtk.AlignEnd)
-	cancel := gtk.NewButtonWithLabel("Cancelar")
+	cancel := gtk.NewButtonWithLabel("Cancel")
 	cancel.ConnectClicked(func() { p.finish(false) })
-	accept := gtk.NewButtonWithLabel("Aceptar")
+	accept := gtk.NewButtonWithLabel("Accept")
 	accept.AddCSSClass("suggested-action")
 	accept.ConnectClicked(func() { p.finish(true) })
 	buttons.Append(cancel)
 	buttons.Append(accept)
 
-	title := gtk.NewLabel("Luces")
+	title := gtk.NewLabel("Lights")
 	title.SetHAlign(gtk.AlignCenter)
 
 	// --- Layout ---

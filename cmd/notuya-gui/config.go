@@ -69,12 +69,12 @@ type roomGroup struct {
 
 // unassignedRoomName is the synthetic group holding devices not referenced by
 // any room. It is computed at load time and never written back to the config.
-const unassignedRoomName = "Sin sala"
+const unassignedRoomName = "No room"
 
 // groupByRoom resolves the config's rooms into ordered roomGroups. Each room in
 // cfg.Rooms becomes a group containing the devices its device_id list points at
 // (stale ids — no matching device — are skipped). Every device not referenced
-// by any room is appended in a trailing synthetic "Sin sala" group. Grouping is
+// by any room is appended in a trailing synthetic "No room" group. Grouping is
 // O(devices) and performs zero device I/O.
 func groupByRoom(cfg *Config) []roomGroup {
 	byID := make(map[string]*Device, len(cfg.Devices))
@@ -110,8 +110,8 @@ func groupByRoom(cfg *Config) []roomGroup {
 	return groups
 }
 
-// resolveConfigPath applies the precedence: $NOTUYA_CONFIG env > the shared
-// ~/.config/tuya/config.json that picker.py, the CLI and the daemon use.
+// resolveConfigPath applies the precedence: $NOTUYA_CONFIG env >
+// ~/.config/notuya-gui/config.json.
 func resolveConfigPath() string {
 	if env := os.Getenv("NOTUYA_CONFIG"); env != "" {
 		return env

@@ -1,10 +1,20 @@
 # notuya-gui
 
-A native color-wheel picker for the Tuya smart bulbs, written in Go. It is a
-port of `~/.config/tuya/picker.py` (a GTK4 layer-shell overlay that drove the
-bulbs through the `notuyad` HTTP daemon), rewritten to drive the bulbs
-**in-process** by importing the `notuya-go` library directly. No daemon, no
-subprocess, no Python.
+> **Response style:** always answer "tl;dr" — brief, high-level responses.
+
+A native Tuya smart-bulb controller, written in Go. It is a port of
+`~/.config/tuya/picker.py` (a GTK4 layer-shell overlay that drove the bulbs
+through the `notuyad` HTTP daemon), rewritten to drive the bulbs **in-process**
+by importing the `notuya-go` library directly. No daemon, no subprocess, no
+Python.
+
+The binary is **dual-mode**:
+
+- **`notuya-gui`** (default) — a normal desktop window (an xdg-toplevel, not a
+  layer-shell overlay) with per-device light control, grouped by room.
+- **`notuya-gui --picker`** — the original `wlr-layer-shell` colour-wheel
+  overlay, unchanged.
+- **`notuya-gui -config`** — the settings window (devices, discovery, rooms).
 
 ## Why this exists
 
@@ -69,7 +79,10 @@ CGO-only and link the system GTK4 stack.
 So:
 
 - **`notuya-gui` builds with `CGO_ENABLED=1`** and links GTK4 +
-  gtk4-layer-shell via pkg-config (`gtk4`, `gtk4-layer-shell-0`).
+  gtk4-layer-shell + libadwaita via pkg-config (`gtk4`,
+  `gtk4-layer-shell-0`, `libadwaita-1`). The desktop app uses libadwaita
+  (via the `gotk4-adwaita` bindings) for its modern GNOME widgets; the
+  picker overlay stays on pure GTK4 + layer-shell.
 - This is confined to this module. The notuya-go library packages it
   imports remain CGO-free and are compiled by the Go compiler as usual;
   only the final GUI binary needs a C toolchain and the GTK4 headers.
@@ -78,11 +91,12 @@ So:
 
 ### Build prerequisites
 
-System packages (Arch/Omarchy names): `gtk4`, `gtk4-layer-shell`, a C
-compiler, and pkg-config. Verify the toolchain resolves the libraries:
+System packages (Arch/Omarchy names): `gtk4`, `gtk4-layer-shell`,
+`libadwaita`, a C compiler, and pkg-config. Verify the toolchain resolves
+the libraries:
 
 ```bash
-pkg-config --exists gtk4 gtk4-layer-shell-0 && echo ok
+pkg-config --exists gtk4 gtk4-layer-shell-0 libadwaita-1 && echo ok
 ```
 
 Note the pkg-config module for the layer-shell library is
@@ -91,11 +105,33 @@ Note the pkg-config module for the layer-shell library is
 
 ## Architecture
 
-Single binary, one module:
+Single binary, one module. Files under `cmd/notuya-gui/`:
 
 ```
-cmd/notuya-gui/main.go     entry point: layer-shell window + GTK4 app
+main.go          entry point: flag parsing → runApp | runPicker | runSettings
+picker.go        the --picker layer-shell colour-wheel overlay
+app.go           the default desktop window (libadwaita: AdwApplicationWindow +
+                 AdwHeaderBar + AdwViewSwitcher/ViewStack), Luces/Escenas/Ajustes
+device_panel.go  per-device control card (AdwActionRow header + power/bright/
+                 colour/temp/scene/status; colour wheel is a plain DrawingArea)
+control.go       per-device controller: owns a bulb session, command methods +
+                 Refresh; borrows the streamer for live colour drag
+stream.go        music-mode streamer (used by picker AND app live-drag)
+settings.go      settings window: devices, LAN discovery, room management
+config.go        Config/Device/Room types, groupByRoom, saveConfig
+color.go         HSV↔RGB helpers; wheel.go generates/caches the wheel bitmap
 ```
+
+The picker opens one music-mode stream per device for its whole lifetime. The
+desktop app is longer-lived: each device gets a `control` holding a persistent
+`protocol35` session (mutex-serialized, since a session is not concurrency-safe)
+over which it issues discrete waited commands. A live colour drag temporarily
+closes that command session and borrows the `streamer` (music mode) so the drag
+is smooth, then leaves music mode with a final `SetColour` and lets the command
+session re-open lazily.
+
+Colour-wheel drawing and the coordinate→(hue,sat) mapping are shared between the
+picker and the panel (`coordsToHSSized`, the cached wheel surface).
 
 Planned internal split (subject to change as the port lands):
 
@@ -139,25 +175,49 @@ Shared with the CLI and daemon — the same `config.json`:
   committed exit — the same file `picker.py` and the daemon use, so
   `GET /color`, the CLI, and the GUI all agree on what is lit.
 
+### Rooms (top-level entity)
+
+Rooms are a **first-class, top-level entity** in `config.json`, not a
+per-device field — so the desktop app can resolve "all lights in a room" from
+config alone without querying any lamp. `Device` is unchanged; a new
+top-level `rooms` array lists each room's `name` and the `device_id`s it
+contains (a device may belong to several rooms):
+
+```json
+{
+  "devices": [ { "device_id": "eb…14", "ip_address": "192.168.1.4", "local_key": "…", "name": "luz 1" } ],
+  "rooms": [ { "name": "Salón", "devices": ["eb…14"] } ],
+  "follow_mode": "wallpaper"
+}
+```
+
+`groupByRoom(cfg)` resolves the `rooms` array into ordered
+`[]roomGroup{Name, []*Device}`: stale `device_id`s (no matching device) are
+skipped, and every device not referenced by any room is appended in a
+trailing synthetic **"Sin sala"** group (computed at load, never written).
+`saveConfig` serialises `rooms` alongside `devices` via the same
+unknown-key-preserving, atomic round-trip.
+
 ## Settings window
 
 `notuya-gui -config` opens a settings window (an ordinary GTK4 toplevel,
-**not** a layer-shell overlay) instead of the picker. It edits the shared
-`config.json`'s `devices` array — add, edit, and remove bulbs — and can
-**discover** bulbs on the LAN via notuya-go's `pkg/discovery.Scan`
-(reused; no UDP code lives here).
+**not** a layer-shell overlay) instead of the app or picker. It edits the
+shared `config.json`'s `devices` array — add, edit, and remove bulbs — manages
+the `rooms` array (create/rename/remove rooms and assign devices via
+membership checkboxes), and can **discover** bulbs on the LAN via notuya-go's
+`pkg/discovery.Scan` (reused; no UDP code lives here).
 
 - **Keys are entered by hand.** LAN discovery yields `device_id` + `ip`
   only; a bulb's `local_key` comes from Tuya's cloud, which this tool
   deliberately does not touch. Clicking a discovered device pre-fills IP +
   Device ID; the user pastes the Local Key.
 - **Writes preserve unknown keys.** `saveConfig` round-trips the file
-  through `map[string]json.RawMessage`, replacing only `devices`, so keys
-  this tool doesn't model (`wallpaper_sync`, theme keys, anything the
+  through `map[string]json.RawMessage`, replacing only `devices` and `rooms`,
+  so keys this tool doesn't model (`wallpaper_sync`, theme keys, anything the
   CLI/daemon own) survive. The write is atomic (temp file + rename) since
   the config is co-owned.
-- If the picker is launched with **no** config file, it exits with a hint
-  pointing at `notuya-gui -config` so a first-run user can create one.
+- If the app or picker is launched with **no** config file, it exits with a
+  hint pointing at `notuya-gui -config` so a first-run user can create one.
 
 ## Hyprland window rules
 

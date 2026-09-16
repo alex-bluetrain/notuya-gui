@@ -22,9 +22,92 @@ type Device struct {
 	Name      string `json:"name"`
 }
 
+// Room is one entry of the top-level `rooms` array in config.json. Rooms are a
+// first-class entity keyed by device_id, so the app can resolve "all lights in
+// a room" from the config alone without querying any lamp. A device may belong
+// to several rooms.
+type Room struct {
+	Name    string   `json:"name"`
+	Devices []string `json:"devices"` // device_id references
+}
+
+// SceneState is one light's captured state within a scene. When Off (On is
+// false) only DeviceID + On are meaningful; the mode/colour/temp/bright fields
+// are omitted from JSON. Hue and Sat are stored in 0-1 units (matching
+// deviceStatus) to avoid round-trip drift; Bright and Temp are 0-100 percents.
+type SceneState struct {
+	DeviceID string  `json:"device_id"`
+	On       bool    `json:"on"`
+	Mode     string  `json:"mode,omitempty"`   // device.ModeColour / ModeWhite
+	Hue      float64 `json:"hue,omitempty"`    // 0-1 (colour mode)
+	Sat      float64 `json:"sat,omitempty"`    // 0-1 (colour mode)
+	Bright   float64 `json:"bright,omitempty"` // 0-100
+	Temp     float64 `json:"temp,omitempty"`   // 0-100 (white mode)
+}
+
+// Scene is a named, software-only snapshot: applying it fans out discrete
+// commands to the lights it lists. It is global (any subset of devices, across
+// rooms) and depends on no firmware or cloud feature.
+type Scene struct {
+	Name   string       `json:"name"`
+	States []SceneState `json:"states"`
+}
+
 // Config is the subset of config.json this tool cares about.
 type Config struct {
 	Devices []Device `json:"devices"`
+	Rooms   []Room   `json:"rooms"`
+	Scenes  []Scene  `json:"scenes"`
+}
+
+// roomGroup is a resolved room: its name and the devices it contains, in the
+// order they appear in the config's devices array.
+type roomGroup struct {
+	Name    string
+	Devices []*Device
+}
+
+// unassignedRoomName is the synthetic group holding devices not referenced by
+// any room. It is computed at load time and never written back to the config.
+const unassignedRoomName = "Sin sala"
+
+// groupByRoom resolves the config's rooms into ordered roomGroups. Each room in
+// cfg.Rooms becomes a group containing the devices its device_id list points at
+// (stale ids — no matching device — are skipped). Every device not referenced
+// by any room is appended in a trailing synthetic "Sin sala" group. Grouping is
+// O(devices) and performs zero device I/O.
+func groupByRoom(cfg *Config) []roomGroup {
+	byID := make(map[string]*Device, len(cfg.Devices))
+	for i := range cfg.Devices {
+		byID[cfg.Devices[i].DeviceID] = &cfg.Devices[i]
+	}
+
+	assigned := make(map[string]bool, len(cfg.Devices))
+	groups := make([]roomGroup, 0, len(cfg.Rooms)+1)
+	for _, room := range cfg.Rooms {
+		g := roomGroup{Name: room.Name}
+		for _, id := range room.Devices {
+			dev, ok := byID[id]
+			if !ok {
+				continue // stale reference, tolerated
+			}
+			g.Devices = append(g.Devices, dev)
+			assigned[id] = true
+		}
+		groups = append(groups, g)
+	}
+
+	var unassigned roomGroup
+	unassigned.Name = unassignedRoomName
+	for i := range cfg.Devices {
+		if !assigned[cfg.Devices[i].DeviceID] {
+			unassigned.Devices = append(unassigned.Devices, &cfg.Devices[i])
+		}
+	}
+	if len(unassigned.Devices) > 0 {
+		groups = append(groups, unassigned)
+	}
+	return groups
 }
 
 // resolveConfigPath applies the precedence: $NOTUYA_CONFIG env > the shared
@@ -65,12 +148,12 @@ func loadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// saveConfig writes devices back into config.json at path, preserving every
-// other top-level key (wallpaper_sync, theme keys, anything the CLI/daemon
-// own) by round-tripping the file through a map of raw messages. The write is
-// atomic: a temp file is written then renamed over path, so a crash mid-write
-// can't corrupt the shared config.
-func saveConfig(path string, devices []Device) error {
+// saveConfig writes devices, rooms and scenes back into config.json at path,
+// preserving every other top-level key (wallpaper_sync, theme keys, anything the
+// CLI/daemon own) by round-tripping the file through a map of raw messages. The
+// write is atomic: a temp file is written then renamed over path, so a crash
+// mid-write can't corrupt the shared config.
+func saveConfig(path string, devices []Device, rooms []Room, scenes []Scene) error {
 	root := map[string]json.RawMessage{}
 	if data, err := os.ReadFile(path); err == nil {
 		if err := json.Unmarshal(data, &root); err != nil {
@@ -88,6 +171,24 @@ func saveConfig(path string, devices []Device) error {
 		return fmt.Errorf("config: encoding devices: %w", err)
 	}
 	root["devices"] = devicesJSON
+
+	if rooms == nil {
+		rooms = []Room{}
+	}
+	roomsJSON, err := json.Marshal(rooms)
+	if err != nil {
+		return fmt.Errorf("config: encoding rooms: %w", err)
+	}
+	root["rooms"] = roomsJSON
+
+	if scenes == nil {
+		scenes = []Scene{}
+	}
+	scenesJSON, err := json.Marshal(scenes)
+	if err != nil {
+		return fmt.Errorf("config: encoding scenes: %w", err)
+	}
+	root["scenes"] = scenesJSON
 
 	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {

@@ -22,8 +22,8 @@ vet: ## Static analysis
 check: vet test ## Vet + test
 
 deps: ## Verify GTK4 toolchain is present
-	@pkg-config --exists gtk4 gtk4-layer-shell-0 && echo "toolchain ok" \
-		|| { echo "missing gtk4 / gtk4-layer-shell-0 (install gtk4, gtk4-layer-shell)"; exit 1; }
+	@pkg-config --exists gtk4 gtk4-layer-shell-0 libadwaita-1 && echo "toolchain ok" \
+		|| { echo "missing gtk4 / gtk4-layer-shell-0 / libadwaita-1 (install gtk4, gtk4-layer-shell, libadwaita)"; exit 1; }
 
 install: build ## Copy the built binary into ~/.local/bin (overwrites existing)
 	@mkdir -p $(BINDIR)

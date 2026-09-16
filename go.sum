@@ -1,3 +1,5 @@
+github.com/diamondburned/gotk4-adwaita/pkg v0.0.0-20260808200908-d4aecaa0ff32 h1:1EATAO7ZRrY7B7lt6djCzGnLPlKXPzuOuwPzDSF7jT0=
+github.com/diamondburned/gotk4-adwaita/pkg v0.0.0-20260808200908-d4aecaa0ff32/go.mod h1:ZzYiyPe0TqsukfPHi0sK/WwKzm0wIJdSRylLnuvAZNw=
 github.com/diamondburned/gotk4-layer-shell/pkg v0.0.0-20240109211357-6efa9f6dc438 h1:Ymnl4B+Fn4srLxXbRV2RY1iHT2SH3oAkOfxeEeMI3Fg=
 github.com/diamondburned/gotk4-layer-shell/pkg v0.0.0-20240109211357-6efa9f6dc438/go.mod h1:AjrxxF6teeNWgaEg0zIUwoqFtXlVTHlEGZvrOn7RXaQ=
 github.com/diamondburned/gotk4/pkg v0.4.1 h1:w4BwVUUBkKyNLz5HKHN2Oz3kZCTLHfpfKgB/su1p6uo=

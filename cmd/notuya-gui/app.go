@@ -29,11 +29,6 @@ type desktopApp struct {
 	// without re-deriving the mapping.
 	byID map[string]*control
 
-	// placed tracks which panels have already been added to the widget tree,
-	// so a device that belongs to several rooms is shown (and built) once —
-	// a GTK widget cannot have two parents.
-	placed map[*devicePanel]bool
-
 	// scenesGroup + scenesStatus back the Escenas tab; rebuilt on every
 	// change. sceneRows tracks the ActionRows currently in the group so they
 	// can be removed on rebuild.
@@ -85,15 +80,14 @@ func (a *desktopApp) activate() {
 	window.SetDefaultSize(520, 720)
 	a.window = window
 
-	a.placed = make(map[*devicePanel]bool, len(a.cfg.Devices))
 	a.byID = make(map[string]*control, len(a.cfg.Devices))
 
-	// Build one control per device, keyed by device_id so a room's panels
-	// reuse the same session as the "No room" listing would.
+	// Build one control per device, keyed by device_id so the Rooms tab and
+	// the Lights playground share the same session per bulb.
 	panelByID := make(map[string]*devicePanel, len(a.cfg.Devices))
 	for i := range a.cfg.Devices {
 		ctl := newControl(a.cfg.Devices[i])
-		panel := newDevicePanel(ctl, a.wheelSurface)
+		panel := newDevicePanel(ctl)
 		a.controls = append(a.controls, ctl)
 		a.panels = append(a.panels, panel)
 		panelByID[a.cfg.Devices[i].DeviceID] = panel
@@ -105,9 +99,10 @@ func (a *desktopApp) activate() {
 	stack := adw.NewViewStack()
 	stack.SetVExpand(true)
 	stack.AddTitledWithIcon(a.buildRoomsTab(panelByID), "rooms", "Rooms", "user-home-symbolic")
-	stack.AddTitledWithIcon(a.buildLightsTab(panelByID), "lights", "Lights", "weather-clear-symbolic")
+	stack.AddTitledWithIcon(a.buildLightsTab(), "lights", "Lights", "weather-clear-symbolic")
 	stack.AddTitledWithIcon(a.buildScenesTab(), "scenes", "Scenes", "starred-symbolic")
 	stack.AddTitledWithIcon(a.buildSettingsTab(), "settings", "Settings", "emblem-system-symbolic")
+	stack.SetVisibleChildName("scenes")
 
 	switcher := adw.NewViewSwitcher()
 	switcher.SetPolicy(adw.ViewSwitcherPolicyWide)
@@ -133,31 +128,6 @@ func (a *desktopApp) activate() {
 	for _, panel := range a.panels {
 		panel.refresh()
 	}
-}
-
-// buildLightsTab builds the room-grouped device panels (the original app
-// content) and returns the scrolled widget for the "Lights" tab.
-func (a *desktopApp) buildLightsTab(byID map[string]*devicePanel) *gtk.ScrolledWindow {
-	content := gtk.NewBox(gtk.OrientationVertical, 18)
-	content.SetMarginTop(18)
-	content.SetMarginBottom(18)
-	content.SetMarginStart(12)
-	content.SetMarginEnd(12)
-
-	for _, group := range groupByRoom(a.cfg) {
-		content.Append(a.buildRoomSection(group, byID))
-	}
-
-	// Clamp keeps the column at a comfortable width and centres it on wide
-	// windows, like a native GNOME app.
-	clamp := adw.NewClamp()
-	clamp.SetMaximumSize(600)
-	clamp.SetChild(content)
-
-	scroll := gtk.NewScrolledWindow()
-	scroll.SetVExpand(true)
-	scroll.SetChild(clamp)
-	return scroll
 }
 
 // buildRoomsTab builds a mobile-style overview: one row per room with an icon,
@@ -491,51 +461,15 @@ func (a *desktopApp) buildSettingsTab() gtk.Widgetter {
 	return s.buildContent()
 }
 
-// buildRoomSection renders one room: a header with group actions followed by
-// the panels for its devices (looked up by id so each device has exactly one
-// panel/session even if it appears in several rooms — here we build the panel
-// once and reference it).
-func (a *desktopApp) buildRoomSection(group roomGroup, byID map[string]*devicePanel) *adw.PreferencesGroup {
-	section := adw.NewPreferencesGroup()
-	section.SetTitle(group.Name)
-
-	// Group actions fan out to every member device.
-	members := make([]*devicePanel, 0, len(group.Devices))
-	for _, dev := range group.Devices {
-		if panel, ok := byID[dev.DeviceID]; ok {
-			members = append(members, panel)
-		}
-	}
-
-	// "Todo ON/OFF" live in the group's header suffix (top-right of the card).
-	actions := gtk.NewBox(gtk.OrientationHorizontal, 6)
-	actions.SetVAlign(gtk.AlignCenter)
-	allOn := gtk.NewButtonWithLabel("All on")
-	allOn.AddCSSClass("flat")
-	allOn.ConnectClicked(func() { a.groupPower(members, true) })
-	allOff := gtk.NewButtonWithLabel("All off")
-	allOff.AddCSSClass("flat")
-	allOff.ConnectClicked(func() { a.groupPower(members, false) })
-	actions.Append(allOn)
-	actions.Append(allOff)
-	section.SetHeaderSuffix(actions)
-
-	for _, panel := range members {
-		if a.placed[panel] {
-			continue // already shown in an earlier room; one widget, one parent
-		}
-		a.placed[panel] = true
-		section.Add(panel.build())
-	}
-	return section
-}
-
-// groupPower toggles every member panel's device, off the GTK thread, then
-// refreshes each panel.
+// groupPower toggles every member panel's device off the GTK thread.
 func (a *desktopApp) groupPower(members []*devicePanel, on bool) {
 	for _, panel := range members {
 		p := panel
-		p.runAsync(func(ctx context.Context) error { return p.ctl.SetPower(ctx, on) })
+		go func() {
+			if err := p.ctl.SetPower(context.Background(), on); err != nil {
+				fmt.Fprintf(os.Stderr, "notuya-gui: %s -> %v\n", p.ctl.name(), err)
+			}
+		}()
 	}
 }
 

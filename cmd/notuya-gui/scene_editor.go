@@ -39,7 +39,7 @@ type sceneDeviceRow struct {
 	card      *gtk.Box
 	include   *gtk.CheckButton
 	power     *gtk.Switch
-	modeCombo *gtk.DropDown
+	modeCombo *adw.ToggleGroup
 	wheelRow  *gtk.Box
 	wheel     *gtk.DrawingArea
 	swatch    *gtk.DrawingArea
@@ -212,9 +212,7 @@ func (e *sceneEditor) newDeviceRow(dev Device) *sceneDeviceRow {
 	modeLabel.SetWidthChars(16)
 	modeLabel.SetXAlign(0.0)
 	modeRow.Append(modeLabel)
-	r.modeCombo = gtk.NewDropDownFromStrings([]string{"Colour", "White"})
-	r.modeCombo.SetHExpand(true)
-	r.modeCombo.NotifyProperty("selected", func() {
+	r.modeCombo = newModeToggle(func(bool) {
 		if r.suppress {
 			return
 		}
@@ -299,9 +297,9 @@ func (r *sceneDeviceRow) prefill(include bool, st SceneState) {
 	r.power.SetActive(st.On)
 
 	if st.Mode == device.ModeWhite {
-		r.modeCombo.SetSelected(1)
+		r.modeCombo.SetActiveName("white")
 	} else {
-		r.modeCombo.SetSelected(0)
+		r.modeCombo.SetActiveName("colour")
 		if r.st.Mode == "" {
 			r.st.Mode = device.ModeColour
 		}
@@ -320,7 +318,7 @@ func (r *sceneDeviceRow) prefill(include bool, st SceneState) {
 // onModeChanged updates st.Mode, toggles which controls are visible, and pushes
 // a live preview of the newly selected mode.
 func (r *sceneDeviceRow) onModeChanged() {
-	if r.modeCombo.Selected() == 1 {
+	if r.modeCombo.ActiveName() == "white" {
 		r.st.Mode = device.ModeWhite
 	} else {
 		r.st.Mode = device.ModeColour
@@ -471,9 +469,39 @@ func labelledScaleSimple(label string, dst **gtk.Scale, min, max float64, onChan
 	scale.SetDrawValue(true)
 	scale.SetRoundDigits(0)
 	scale.ConnectValueChanged(func() { onChange(scale.Value()) })
+	disableScaleScroll(scale)
 	row.Append(scale)
 	*dst = scale
 	return row
+}
+
+// newModeToggle builds an AdwToggleGroup with two icon+label toggles —
+// "colour" (colour wheel) and "white" (colour temperature) — for the
+// Colour/White mode selector shared by the scene editor and the Lights
+// playground. onChange fires with isWhite = true when White becomes active.
+// The returned group's active toggle is set programmatically with
+// SetActiveName("colour"|"white"); guard onChange against those with a
+// suppress flag in the caller.
+func newModeToggle(onChange func(isWhite bool)) *adw.ToggleGroup {
+	group := adw.NewToggleGroup()
+	group.SetHExpand(true)
+
+	colour := adw.NewToggle()
+	colour.SetName("colour")
+	colour.SetLabel("Colour")
+	colour.SetIconName("color-select-symbolic")
+	group.Add(colour)
+
+	white := adw.NewToggle()
+	white.SetName("white")
+	white.SetLabel("White")
+	white.SetIconName("weather-clear-symbolic")
+	group.Add(white)
+
+	group.NotifyProperty("active-name", func() {
+		onChange(group.ActiveName() == "white")
+	})
+	return group
 }
 
 // save builds the scene from the included rows, writes it into a.cfg.Scenes

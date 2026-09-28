@@ -7,6 +7,7 @@ import (
 	"github.com/averstraeten/notuya-go/pkg/device"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/cairo"
+	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
@@ -67,18 +68,26 @@ func (a *desktopApp) openSceneEditor(index int) {
 		title = "Edit scene"
 	}
 
+	// Hue-style: the window close button dismisses (== cancel), and a single
+	// prominent Save sits top-right. No competing text "Cancel" button.
 	header := adw.NewHeaderBar()
-	header.SetShowEndTitleButtons(false)
 	header.SetTitleWidget(adw.NewWindowTitle(title, ""))
-
-	cancel := gtk.NewButtonWithLabel("Cancel")
-	cancel.ConnectClicked(func() { win.Close() })
-	header.PackStart(cancel)
 
 	save := gtk.NewButtonWithLabel("Save")
 	save.AddCSSClass("suggested-action")
 	save.ConnectClicked(func() { e.save() })
 	header.PackEnd(save)
+
+	// Escape dismisses (cancel); the close button in the title bar does too.
+	esc := gtk.NewEventControllerKey()
+	esc.ConnectKeyPressed(func(keyval, _ uint, _ gdk.ModifierType) bool {
+		if keyval == gdk.KEY_Escape {
+			win.Close()
+			return true
+		}
+		return false
+	})
+	win.AddController(esc)
 
 	// Body: name entry + one editor card per device.
 	body := gtk.NewBox(gtk.OrientationVertical, 12)
@@ -245,7 +254,7 @@ func (e *sceneEditor) newDeviceRow(dev Device) *sceneDeviceRow {
 	drag.ConnectDragBegin(func(x, y float64) {
 		startX, startY = x, y
 		r.setSelection(x, y)
-		r.ctl.BeginLiveDrag(r.selRGB())
+		r.ctl.BeginLiveDrag(r.selRGB(), device.DefaultTransition)
 	})
 	drag.ConnectDragUpdate(func(ox, oy float64) {
 		r.setSelection(startX+ox, startY+oy)
@@ -500,6 +509,31 @@ func newModeToggle(onChange func(isWhite bool)) *adw.ToggleGroup {
 
 	group.NotifyProperty("active-name", func() {
 		onChange(group.ActiveName() == "white")
+	})
+	return group
+}
+
+// newTransitionToggle builds an AdwToggleGroup with two icon+label toggles —
+// "jump" (instant snap) and "fade" (gradual) — for DP 28's change mode. onChange
+// fires with isFade = true when Fade becomes active. Set the active toggle
+// programmatically with SetActiveName("jump"|"fade"); guard onChange with a
+// suppress flag in the caller.
+func newTransitionToggle(onChange func(isFade bool)) *adw.ToggleGroup {
+	group := adw.NewToggleGroup()
+	group.SetHAlign(gtk.AlignStart)
+
+	jump := adw.NewToggle()
+	jump.SetName("jump")
+	jump.SetLabel("Instant")
+	group.Add(jump)
+
+	fade := adw.NewToggle()
+	fade.SetName("fade")
+	fade.SetLabel("Smooth")
+	group.Add(fade)
+
+	group.NotifyProperty("active-name", func() {
+		onChange(group.ActiveName() == "fade")
 	})
 	return group
 }

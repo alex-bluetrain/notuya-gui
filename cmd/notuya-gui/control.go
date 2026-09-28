@@ -41,6 +41,10 @@ type control struct {
 	// While non-nil the command session is closed so the bulb only ever has
 	// one session open at a time.
 	live *streamer
+
+	// liveTransition is the per-colour fade length (0-10, DP 28) sent with
+	// every streamed colour during the current drag. Set by BeginLiveDrag.
+	liveTransition int
 }
 
 // protocol35Session is the concrete session type returned by
@@ -226,7 +230,7 @@ func (c *control) ApplyState(ctx context.Context, st SceneState) error {
 // streamer seeded with the current colour, so wheel drags stream smoothly. It
 // is a no-op if a drag is already in progress. Safe to call from the GTK
 // thread — the streamer starts its own goroutines.
-func (c *control) BeginLiveDrag(seed device.RGB) {
+func (c *control) BeginLiveDrag(seed device.RGB, transition int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.live != nil {
@@ -238,16 +242,28 @@ func (c *control) BeginLiveDrag(seed device.RGB) {
 		c.sess = nil
 		c.bulb = nil
 	}
-	c.live = newStreamer([]Device{c.dev}, seed, bulb.StreamOptions{})
+	c.liveTransition = transition
+	c.live = newStreamer([]Device{c.dev}, seed, bulb.StreamOptions{Transition: bulb.Transition(transition)})
 }
 
-// UpdateLiveDrag streams a colour during a drag (newest-wins, non-blocking).
+// SetLiveTransition changes the per-colour fade length applied to subsequent
+// UpdateLiveDrag sends without restarting the stream, so the transition slider
+// takes effect mid-drag.
+func (c *control) SetLiveTransition(transition int) {
+	c.mu.Lock()
+	c.liveTransition = transition
+	c.mu.Unlock()
+}
+
+// UpdateLiveDrag streams a colour during a drag (newest-wins, non-blocking),
+// carrying the drag's current transition so it takes effect live.
 func (c *control) UpdateLiveDrag(rgb device.RGB) {
 	c.mu.Lock()
 	live := c.live
+	tt := c.liveTransition
 	c.mu.Unlock()
 	if live != nil {
-		live.Set(rgb, nil)
+		live.Set(rgb, bulb.Transition(tt))
 	}
 }
 

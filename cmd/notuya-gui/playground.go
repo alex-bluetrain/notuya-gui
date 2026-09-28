@@ -12,7 +12,7 @@ import (
 
 // playgroundWheelSize is the diameter of the shared colour wheel in the Lights
 // playground. Matches the scene editor's wheel for a consistent feel.
-const playgroundWheelSize = 200
+const playgroundWheelSize = 240
 
 // playground is the Lights tab: a manual "playground" with a checkbox list of
 // devices and a single set of controls (colour wheel, mode, brightness, temp)
@@ -33,11 +33,17 @@ type playground struct {
 	bright    *gtk.Scale
 	tempRow   *gtk.Box
 	temp      *gtk.Scale
+	trans     *adw.ToggleGroup
 
 	// current shared selection
 	hue  float64
 	sat  float64
 	mode string
+
+	// brightDragging is true while the brightness slider is being dragged in
+	// colour mode with a live music stream open, so setBrightness streams the
+	// colour (fades) instead of writing it discretely (snaps).
+	brightDragging bool
 
 	suppress bool
 }
@@ -121,22 +127,27 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	modeRow.Append(pg.modeToggle)
 	inner.Append(modeRow)
 
-	// Colour wheel + swatch (colour mode).
-	pg.wheelRow = gtk.NewBox(gtk.OrientationHorizontal, 10)
+	// Colour wheel + preview swatch (colour mode). The wheel is the visual
+	// focus: a large disc centred in the card with the live preview swatch
+	// beneath it, Hue-app style, rather than a small wheel pinned to one corner.
+	pg.wheelRow = gtk.NewBox(gtk.OrientationVertical, 12)
+	pg.wheelRow.SetHAlign(gtk.AlignCenter)
+	pg.wheelRow.SetMarginTop(8)
+	pg.wheelRow.SetMarginBottom(8)
+
 	pg.wheel = gtk.NewDrawingArea()
 	pg.wheel.SetContentWidth(playgroundWheelSize)
 	pg.wheel.SetContentHeight(playgroundWheelSize)
+	pg.wheel.SetHAlign(gtk.AlignCenter)
 	pg.wheel.SetDrawFunc(pg.drawWheel)
 	pg.wheelRow.Append(pg.wheel)
 
-	swatchBox := gtk.NewBox(gtk.OrientationVertical, 6)
-	swatchBox.SetVAlign(gtk.AlignCenter)
 	pg.swatch = gtk.NewDrawingArea()
-	pg.swatch.SetContentWidth(60)
-	pg.swatch.SetContentHeight(60)
+	pg.swatch.SetContentWidth(120)
+	pg.swatch.SetContentHeight(28)
+	pg.swatch.SetHAlign(gtk.AlignCenter)
 	pg.swatch.SetDrawFunc(pg.drawSwatch)
-	swatchBox.Append(pg.swatch)
-	pg.wheelRow.Append(swatchBox)
+	pg.wheelRow.Append(pg.swatch)
 	inner.Append(pg.wheelRow)
 
 	// Wheel drag → live preview on every checked light + shared hue/sat.
@@ -146,8 +157,9 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 		startX, startY = x, y
 		pg.setSelection(x, y)
 		rgb := pg.selRGB()
+		tt := transitionValue(pg.trans.ActiveName() == "fade")
 		for _, t := range pg.checked() {
-			t.ctl.BeginLiveDrag(rgb)
+			t.ctl.BeginLiveDrag(rgb, tt)
 		}
 	})
 	drag.ConnectDragUpdate(func(ox, oy float64) {
@@ -177,6 +189,35 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	}))
 	pg.bright.SetValue(100)
 
+	// Bracket brightness drags with a live music stream so the change fades
+	// (DP 28) in colour mode when Fade is on, matching the wheel. Outside a
+	// drag setBrightness falls back to a discrete write.
+	brightDrag := gtk.NewGestureDrag()
+	brightDrag.ConnectDragBegin(func(_, _ float64) {
+		if pg.mode != device.ModeColour {
+			return
+		}
+		v := pg.bright.Value()
+		r, g, b := hsvToRGBInt(pg.hue, pg.sat, v/100.0)
+		rgb := device.RGB{R: r, G: g, B: b}
+		tt := transitionValue(pg.trans.ActiveName() == "fade")
+		for _, t := range pg.checked() {
+			t.ctl.BeginLiveDrag(rgb, tt)
+		}
+		pg.brightDragging = true
+	})
+	brightDrag.ConnectDragEnd(func(_, _ float64) {
+		if !pg.brightDragging {
+			return
+		}
+		pg.brightDragging = false
+		for _, t := range pg.checked() {
+			ctl := t.ctl
+			go ctl.EndLiveDrag()
+		}
+	})
+	pg.bright.AddController(brightDrag)
+
 	// Temperature slider (white mode).
 	pg.tempRow = labelledScaleSimple("Temp (cold→warm)", &pg.temp, 0, 100, func(v float64) {
 		if pg.suppress {
@@ -185,6 +226,31 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 		pg.setTemp(v)
 	})
 	inner.Append(pg.tempRow)
+
+	// Transition toggle: DP 28's change mode is boolean (0 = direct/jump,
+	// 1 = gradual/fade), so this is a two-way toggle, not a range. Jump snaps
+	// to each colour instantly (steppy); Fade smears one colour into the next.
+	// Takes effect live mid-drag.
+	fadeRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	fadeLabel := gtk.NewLabel("Transition")
+	fadeLabel.SetWidthChars(16)
+	fadeLabel.SetXAlign(0.0)
+	fadeRow.Append(fadeLabel)
+	pg.trans = newTransitionToggle(func(isFade bool) {
+		if pg.suppress {
+			return
+		}
+		for _, t := range pg.checked() {
+			t.ctl.SetLiveTransition(transitionValue(isFade))
+		}
+	})
+	fadeRow.Append(pg.trans)
+	inner.Append(fadeRow)
+	if device.DefaultTransition != 0 {
+		pg.trans.SetActiveName("fade")
+	} else {
+		pg.trans.SetActiveName("jump")
+	}
 
 	body.Append(controls)
 
@@ -241,6 +307,15 @@ func (pg *playground) applyModeVisibility() {
 	pg.tempRow.SetVisible(!colour)
 }
 
+// transitionValue maps the Fade switch to DP 28's change-mode flag:
+// off = 0 (direct/jump), on = 1 (gradual/fade).
+func transitionValue(fade bool) int {
+	if fade {
+		return 1
+	}
+	return 0
+}
+
 // --- broadcast helpers (all off the GTK thread via the controls) ---
 
 func (pg *playground) setPower(on bool) {
@@ -273,6 +348,18 @@ func (pg *playground) setBrightness(v float64) {
 	if pg.mode == device.ModeColour {
 		r, g, b := hsvToRGBInt(pg.hue, pg.sat, v/100.0)
 		rgb := device.RGB{R: r, G: g, B: b}
+		// Brightness in colour mode is a "v" rewrite of the current colour.
+		// While the slider is being dragged we hold a live music stream open
+		// (see the drag gesture on pg.bright), so the change fades when Fade
+		// is on — DP 28 carries the fade bit, a discrete SetColour cannot.
+		// Outside a drag (keyboard, click-to-value) fall back to a discrete
+		// write, which is correct for jump and cheaper.
+		if pg.brightDragging {
+			for _, t := range pg.checked() {
+				t.ctl.UpdateLiveDrag(rgb)
+			}
+			return
+		}
 		for _, t := range pg.checked() {
 			ctl := t.ctl
 			go func() {
@@ -343,10 +430,11 @@ func (pg *playground) drawWheel(_ *gtk.DrawingArea, cr *cairo.Context, width, he
 func (pg *playground) drawSwatch(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
 	r, g, b := hsvToRGBInt(pg.hue, pg.sat, 1.0)
 	w, h := float64(width), float64(height)
-	roundedRect(cr, 0, 0, w, h, 8)
+	radius := h / 2.0
+	roundedRect(cr, 0, 0, w, h, radius)
 	cr.SetSourceRGB(float64(r)/255, float64(g)/255, float64(b)/255)
 	cr.Fill()
-	roundedRect(cr, 0.5, 0.5, w-1, h-1, 8)
+	roundedRect(cr, 0.5, 0.5, w-1, h-1, radius)
 	cr.SetSourceRGBA(0, 0, 0, 0.15)
 	cr.SetLineWidth(1)
 	cr.Stroke()

@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/cairo"
+	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
+	"github.com/diamondburned/gotk4/pkg/pango"
 )
 
 // desktopApp is the default entry point: an ordinary GTK4 toplevel (an
@@ -29,12 +32,13 @@ type desktopApp struct {
 	// without re-deriving the mapping.
 	byID map[string]*control
 
-	// scenesGroup + scenesStatus back the Escenas tab; rebuilt on every
-	// change. sceneRows tracks the ActionRows currently in the group so they
-	// can be removed on rebuild.
-	scenesGroup  *adw.PreferencesGroup
-	sceneRows    []*adw.ActionRow
+	// scenesFlow + scenesStatus back the Scenes tab; the tile grid is rebuilt
+	// on every change.
+	scenesFlow   *gtk.FlowBox
 	scenesStatus *gtk.Label
+	// scenesCSS holds the per-tile gradient rules; rebuilt and reloaded on
+	// every refreshScenesList so each tile is filled by its lights' colours.
+	scenesCSS *gtk.CSSProvider
 
 	// roomRows backs the Rooms tab's control section: one summary row per
 	// room, updated live as member panels refresh or are toggled.
@@ -98,9 +102,11 @@ func (a *desktopApp) activate() {
 	// selects between them (the Adwaita replacement for a Notebook's tabs).
 	stack := adw.NewViewStack()
 	stack.SetVExpand(true)
-	stack.AddTitledWithIcon(a.buildRoomsTab(panelByID), "rooms", "Rooms", "user-home-symbolic")
-	stack.AddTitledWithIcon(a.buildLightsTab(), "lights", "Lights", "weather-clear-symbolic")
 	stack.AddTitledWithIcon(a.buildScenesTab(), "scenes", "Scenes", "starred-symbolic")
+	stack.AddTitledWithIcon(a.buildLightsTab(), "lights", "Lights", "weather-clear-symbolic")
+	// Rooms tab disabled until fully implemented; keep the code and re-enable here.
+	// stack.AddTitledWithIcon(a.buildRoomsTab(panelByID), "rooms", "Rooms", "user-home-symbolic")
+	_ = panelByID
 	stack.AddTitledWithIcon(a.buildSettingsTab(), "settings", "Settings", "emblem-system-symbolic")
 	stack.SetVisibleChildName("scenes")
 
@@ -473,12 +479,13 @@ func (a *desktopApp) groupPower(members []*devicePanel, on bool) {
 	}
 }
 
-// buildScenesTab builds the "Scenes" tab: a list of saved scenes (click a row
-// to apply it), a "New scene" button that opens the editor, and per-row
-// "Apply"/edit/delete buttons.
+// buildScenesTab builds the "Scenes" tab: a Hue-style grid of scene tiles.
+// Each tile is filled with a gradient of its lights' colours, shows the scene
+// name over a bottom scrim, and applies the scene when clicked. Edit/delete are
+// small buttons overlaid on the tile. A "New scene" button sits in the header.
 func (a *desktopApp) buildScenesTab() *gtk.ScrolledWindow {
 	clamp := adw.NewClamp()
-	clamp.SetMaximumSize(600)
+	clamp.SetMaximumSize(640)
 	clamp.SetVExpand(true)
 
 	box := gtk.NewBox(gtk.OrientationVertical, 12)
@@ -487,22 +494,38 @@ func (a *desktopApp) buildScenesTab() *gtk.ScrolledWindow {
 	box.SetMarginStart(14)
 	box.SetMarginEnd(14)
 
-	a.scenesGroup = adw.NewPreferencesGroup()
-	a.scenesGroup.SetTitle("Scenes")
-	a.scenesGroup.SetDescription("Tap “Apply” to restore a saved scene")
+	// The static scene-tile styling (shape, scrim, hover) plus per-tile
+	// gradient rules all live in one display-wide provider, reloaded on every
+	// refresh. Priority above the theme so the gradients win.
+	a.scenesCSS = gtk.NewCSSProvider()
+	if disp := gdk.DisplayGetDefault(); disp != nil {
+		gtk.StyleContextAddProviderForDisplay(disp, a.scenesCSS, uint(gtk.STYLE_PROVIDER_PRIORITY_APPLICATION))
+	}
 
-	saveBtn := gtk.NewButtonWithLabel("New scene")
-	saveBtn.AddCSSClass("suggested-action")
-	saveBtn.SetVAlign(gtk.AlignCenter)
-	saveBtn.ConnectClicked(func() { a.openSceneEditor(-1) })
-	a.scenesGroup.SetHeaderSuffix(saveBtn)
+	header := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	title := gtk.NewLabel("Scenes")
+	title.AddCSSClass("title-2")
+	title.SetXAlign(0.0)
+	title.SetHExpand(true)
+	header.Append(title)
+
+	a.scenesFlow = gtk.NewFlowBox()
+	a.scenesFlow.AddCSSClass("scenes-flow")
+	a.scenesFlow.SetSelectionMode(gtk.SelectionNone)
+	a.scenesFlow.SetHomogeneous(true)
+	a.scenesFlow.SetColumnSpacing(12)
+	a.scenesFlow.SetRowSpacing(12)
+	a.scenesFlow.SetMinChildrenPerLine(2)
+	a.scenesFlow.SetMaxChildrenPerLine(3)
+	a.scenesFlow.SetVAlign(gtk.AlignStart)
 
 	a.scenesStatus = gtk.NewLabel("")
 	a.scenesStatus.SetXAlign(0.0)
 	a.scenesStatus.SetWrap(true)
 	a.scenesStatus.AddCSSClass("dim-label")
 
-	box.Append(a.scenesGroup)
+	box.Append(header)
+	box.Append(a.scenesFlow)
 	box.Append(a.scenesStatus)
 
 	a.refreshScenesList()
@@ -514,51 +537,88 @@ func (a *desktopApp) buildScenesTab() *gtk.ScrolledWindow {
 	return scroll
 }
 
-// refreshScenesList rebuilds the scenes boxed list from a.cfg.Scenes, one
-// ActionRow per scene with per-row "Apply" and delete buttons.
+// refreshScenesList rebuilds the scene-tile grid from a.cfg.Scenes. Each scene
+// becomes one tile (a gradient-filled clickable card) with edit/delete overlaid
+// in the corner. All tile CSS — the shared shape/scrim rules plus each tile's
+// gradient — is assembled here and loaded into the one provider.
 func (a *desktopApp) refreshScenesList() {
-	for _, row := range a.sceneRows {
-		a.scenesGroup.Remove(row)
-	}
-	a.sceneRows = a.sceneRows[:0]
+	a.scenesFlow.RemoveAll()
 
-	if len(a.cfg.Scenes) == 0 {
-		row := adw.NewActionRow()
-		row.SetTitle("No saved scenes")
-		row.SetSubtitle("Save one to get started")
-		a.scenesGroup.Add(row)
-		a.sceneRows = append(a.sceneRows, row)
-		return
-	}
+	var css strings.Builder
+	css.WriteString(sceneTileBaseCSS)
 
 	for i := range a.cfg.Scenes {
 		idx := i
 		sc := a.cfg.Scenes[i]
-		row := adw.NewActionRow()
-		row.SetTitle(sc.Name)
-
-		apply := gtk.NewButtonWithLabel("Apply")
-		apply.SetVAlign(gtk.AlignCenter)
-		apply.ConnectClicked(func() { a.applySceneAt(idx) })
-
-		edit := gtk.NewButtonFromIconName("document-edit-symbolic")
-		edit.SetVAlign(gtk.AlignCenter)
-		edit.AddCSSClass("flat")
-		edit.SetTooltipText("Edit scene")
-		edit.ConnectClicked(func() { a.openSceneEditor(idx) })
-
-		del := gtk.NewButtonFromIconName("user-trash-symbolic")
-		del.SetVAlign(gtk.AlignCenter)
-		del.AddCSSClass("flat")
-		del.SetTooltipText("Delete scene")
-		del.ConnectClicked(func() { a.deleteSceneAt(idx) })
-
-		row.AddSuffix(apply)
-		row.AddSuffix(edit)
-		row.AddSuffix(del)
-		a.scenesGroup.Add(row)
-		a.sceneRows = append(a.sceneRows, row)
+		class := fmt.Sprintf("scene-tile-%d", idx)
+		css.WriteString(sceneGradientCSS(class, sc))
+		a.scenesFlow.Insert(a.buildSceneTile(idx, sc, class), -1)
 	}
+
+	a.scenesFlow.Insert(a.buildAddSceneTile(), -1)
+
+	a.scenesCSS.LoadFromData(css.String())
+}
+
+// buildSceneTile builds one scene card: a gradient-filled button that applies
+// the scene, with its name over a bottom scrim and small edit/delete buttons
+// overlaid top-right.
+func (a *desktopApp) buildSceneTile(idx int, sc Scene, class string) *gtk.Overlay {
+	tile := gtk.NewButton()
+	tile.AddCSSClass("flat")
+	tile.AddCSSClass("scene-tile")
+	tile.AddCSSClass(class)
+	tile.SetHExpand(true)
+	tile.ConnectClicked(func() { a.applySceneAt(idx) })
+
+	// Name label pinned to the bottom-left over a dark scrim for legibility.
+	name := gtk.NewLabel(sc.Name)
+	name.AddCSSClass("scene-tile-name")
+	name.SetXAlign(0.0)
+	name.SetEllipsize(pango.EllipsizeEnd)
+	name.SetHAlign(gtk.AlignFill)
+	name.SetVAlign(gtk.AlignEnd)
+	name.SetHExpand(true)
+	name.SetCanTarget(false) // clicks pass through to the tile button
+
+	edit := gtk.NewButtonFromIconName("document-edit-symbolic")
+	edit.AddCSSClass("scene-tile-action")
+	edit.SetTooltipText("Edit scene")
+	edit.SetHAlign(gtk.AlignEnd)
+	edit.SetVAlign(gtk.AlignStart)
+	edit.SetMarginEnd(34) // sit left of the delete button
+	edit.ConnectClicked(func() { a.openSceneEditor(idx) })
+
+	del := gtk.NewButtonFromIconName("user-trash-symbolic")
+	del.AddCSSClass("scene-tile-action")
+	del.SetTooltipText("Delete scene")
+	del.SetHAlign(gtk.AlignEnd)
+	del.SetVAlign(gtk.AlignStart)
+	del.ConnectClicked(func() { a.deleteSceneAt(idx) })
+
+	overlay := gtk.NewOverlay()
+	overlay.SetChild(tile)
+	overlay.AddOverlay(name)
+	overlay.AddOverlay(edit)
+	overlay.AddOverlay(del)
+	return overlay
+}
+
+// buildAddSceneTile builds the trailing "+" card that opens the scene editor
+// for a new scene. Same footprint as a scene tile but a dashed, contentless
+// placeholder — the pro-app pattern for "add" within a grid.
+func (a *desktopApp) buildAddSceneTile() *gtk.Button {
+	tile := gtk.NewButton()
+	tile.AddCSSClass("flat")
+	tile.AddCSSClass("scene-add")
+	tile.SetHExpand(true)
+	tile.SetTooltipText("New scene")
+	tile.ConnectClicked(func() { a.openSceneEditor(-1) })
+
+	icon := gtk.NewImageFromIconName("list-add-symbolic")
+	icon.SetPixelSize(28)
+	tile.SetChild(icon)
+	return tile
 }
 
 // applySceneAt fans the scene at index i out to its lights, off the GTK thread.
@@ -571,8 +631,28 @@ func (a *desktopApp) applySceneAt(i int) {
 	applyScene(sc, a.byID)
 }
 
-// deleteSceneAt removes the scene at index i, persists, and refreshes.
+// deleteSceneAt asks for confirmation before removing the scene at index i.
 func (a *desktopApp) deleteSceneAt(i int) {
+	if i < 0 || i >= len(a.cfg.Scenes) {
+		return
+	}
+	name := a.cfg.Scenes[i].Name
+	dlg := adw.NewAlertDialog("Delete scene?", "“"+name+"” will be permanently removed.")
+	dlg.AddResponse("cancel", "Cancel")
+	dlg.AddResponse("delete", "Delete")
+	dlg.SetResponseAppearance("delete", adw.ResponseDestructive)
+	dlg.SetDefaultResponse("cancel")
+	dlg.SetCloseResponse("cancel")
+	dlg.ConnectResponse(func(response string) {
+		if response == "delete" {
+			a.doDeleteSceneAt(i)
+		}
+	})
+	dlg.Present(a.window)
+}
+
+// doDeleteSceneAt removes the scene at index i, persists, and refreshes.
+func (a *desktopApp) doDeleteSceneAt(i int) {
 	if i < 0 || i >= len(a.cfg.Scenes) {
 		return
 	}

@@ -136,7 +136,7 @@ func streamDevice(ctx context.Context, d Device, t *target, opts bulb.StreamOpti
 		last    bulb.StreamColour
 		haveOne bool
 	)
-	tapped := make(chan bulb.StreamColour)
+	tapped := make(chan bulb.StreamColour, 1)
 	go func() {
 		defer close(tapped)
 		for {
@@ -146,11 +146,10 @@ func streamDevice(ctx context.Context, d Device, t *target, opts bulb.StreamOpti
 					return
 				}
 				last, haveOne = c, true
-				select {
-				case tapped <- c:
-				case <-ctx.Done():
-					return
-				}
+				// Newest-wins hand-off: never park holding a stale colour,
+				// or a fast slider defeats the library's coalescing and the
+				// bulb trails behind a backlog of intermediate values.
+				offer(tapped, c)
 			case on := <-t.power:
 				pctx, pcancel := context.WithTimeout(context.Background(), commandTimeout)
 				var err error
@@ -158,10 +157,7 @@ func streamDevice(ctx context.Context, d Device, t *target, opts bulb.StreamOpti
 					err = b.TurnOn(pctx)
 					// Re-apply the current colour so turning on restores it.
 					if err == nil && haveOne {
-						select {
-						case tapped <- last:
-						case <-ctx.Done():
-						}
+						offer(tapped, last)
 					}
 				} else {
 					err = b.TurnOff(pctx)

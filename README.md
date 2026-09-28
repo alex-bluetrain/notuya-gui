@@ -1,10 +1,9 @@
 # notuya-gui
 
-A native Tuya smart-bulb controller, written in Go. It is a port of
-`picker.py` (a GTK4 layer-shell overlay that drove the bulbs through the
-`notuyad` HTTP daemon), rewritten to drive the bulbs **in-process** by
-importing the [`notuya-go`](https://github.com/alex-bluetrain/notuya-go) library
-directly. No daemon, no subprocess, no Python.
+A native Tuya smart-bulb controller, written in Go. It drives the bulbs
+**in-process** by importing the
+[`notuya-go`](https://github.com/alex-bluetrain/notuya-go) library directly —
+no daemon, no subprocess, no cloud.
 
 The binary has three modes:
 
@@ -181,12 +180,14 @@ remain CGO-free.
 
 ## Relationship to notuya-go
 
-A separate Go module that depends on `github.com/alex-bluetrain/notuya-go`. In
-development the two repos sit side by side, wired with a local `replace`:
+A separate Go module that depends on the published
+`github.com/alex-bluetrain/notuya-go`. To build against a local checkout
+instead, use a `go.work` (gitignored, so it stays local) rather than a
+`replace` in `go.mod`, which would also apply to everyone consuming this
+module:
 
 ```
-require github.com/alex-bluetrain/notuya-go v0.0.0
-replace github.com/alex-bluetrain/notuya-go => ../notuya-go
+go work init . ../notuya-go
 ```
 
 It consumes the promoted `pkg/` surface: `pkg/protocol`, `pkg/protocol35`,

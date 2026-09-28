@@ -2,29 +2,26 @@
 
 > **Response style:** always answer "tl;dr" — brief, high-level responses.
 
-A native Tuya smart-bulb controller, written in Go. It is a port of
-`~/.config/tuya/picker.py` (a GTK4 layer-shell overlay that drove the bulbs
-through the `notuyad` HTTP daemon), rewritten to drive the bulbs **in-process**
-by importing the `notuya-go` library directly. No daemon, no subprocess, no
-Python.
+A native Tuya smart-bulb controller, written in Go. It drives the bulbs
+**in-process** by importing the `notuya-go` library directly — no daemon, no
+subprocess.
 
-The binary is **dual-mode**:
+The binary has three modes:
 
 - **`notuya-gui`** (default) — a normal desktop window (an xdg-toplevel, not a
   layer-shell overlay) with per-device light control, grouped by room.
-- **`notuya-gui --picker`** — the original `wlr-layer-shell` colour-wheel
-  overlay, unchanged.
+- **`notuya-gui --picker`** — a `wlr-layer-shell` colour-wheel overlay.
 - **`notuya-gui -config`** — the settings window (devices, discovery, rooms).
 
 ## Why this exists
 
-`picker.py` already works: a GTK4 layer-shell color wheel that opens one
-persistent chunked `POST /stream` to `notuyad` and writes `RRGGBB [TT]` lines
-on drag. `notuya-gui` collapses that two-process design (Python GUI → HTTP →
-Go daemon → bulbs) into a single Go binary that speaks the Tuya protocol
-itself. The GUI thread calls `bulb.StreamColours` on a background goroutine
-over a channel, exactly as the CLI's `music` command and the daemon's
-`/stream` handler do — the same library loop, minus the HTTP hop.
+A GUI that talks to the bulbs over the `notuyad` HTTP daemon needs two
+processes and a socket between them to do one thing: write `RRGGBB [TT]` lines
+as the user drags a colour wheel. `notuya-gui` collapses that into a single Go
+binary that speaks the Tuya protocol itself. The GUI thread calls
+`bulb.StreamColours` on a background goroutine over a channel, exactly as the
+CLI's `music` command and the daemon's `/stream` handler do — the same library
+loop, minus the HTTP hop.
 
 This is the reason the five library packages were promoted from `internal/`
 to `pkg/` in notuya-go: so a sibling module could consume them. `notuya-gui`
@@ -32,18 +29,24 @@ is that sibling.
 
 ## Relationship to notuya-go
 
-`notuya-gui` is a **separate Go module** that depends on
-`github.com/alex-bluetrain/notuya-go`. In development the two repos sit
-side by side and are wired with a local `replace`:
+`notuya-gui` is a **separate Go module** that depends on the published
+`github.com/alex-bluetrain/notuya-go`:
 
 ```
 // go.mod
-require github.com/alex-bluetrain/notuya-go v0.0.0
-replace github.com/alex-bluetrain/notuya-go => ../notuya-go
+require github.com/alex-bluetrain/notuya-go v0.1.0
 ```
 
-Nothing in notuya-go has to be published or tagged for this to work. The
-trade-off (documented in notuya-go's own AGENTS.md) is that the exported
+To develop against an unreleased local checkout, use a **`go.work`** (it is
+gitignored, so it only affects your machine) rather than a `replace` in
+`go.mod` — a `replace` in this module applies to everyone who consumes it and
+breaks the build for anyone without the sibling repo checked out alongside:
+
+```
+go work init . ../notuya-go
+```
+
+The trade-off (documented in notuya-go's own AGENTS.md) is that the exported
 surface it consumes — `bulb.Bulb`, `bulb.StreamColours`,
 `bulb.StreamColour`, `bulb.StreamOptions`, `bulb.Transition`,
 `device.RGB`, `protocol35.NewSession`, `protocol.Session` — is now public
@@ -73,8 +76,8 @@ protocol. Gio (the pure-Go GUI toolkit) does not support it: it owns its
 `wl_surface` internally and gives no hook to wrap it in a
 `zwlr_layer_surface_v1`. The realistic path to a real layer-shell surface in
 Go is GTK4 via the `gotk4` bindings plus `gotk4-layer-shell`, which wrap the
-same `libgtk4-layer-shell.so` that `picker.py` preloads today. Both are
-CGO-only and link the system GTK4 stack.
+system `libgtk4-layer-shell.so`. Both are CGO-only and link the system GTK4
+stack.
 
 So:
 
@@ -180,19 +183,18 @@ mutates `a.cfg.Rooms` and persists via `a.saveCfg`. Membership changes are
 reflected in the control views on the next launch. The Settings tab no longer
 owns any room UI.
 
-Planned internal split (subject to change as the port lands):
+The picker overlay's internal split:
 
 ```
 color wheel      HSV polar bitmap, generated once and cached to disk as raw
-                 BGRA bytes (port of picker.py's _generate_wheel_bytes /
-                 _load_wheel), drawn with Cairo via gotk4.
+                 BGRA bytes, drawn with Cairo via gotk4.
 sliders          brightness (0-100%) and transition (0-10) vertical scales.
 streaming        one *bulb.Bulb per device; a background goroutine runs
                  bulb.StreamColours over a channel; drag events push
                  bulb.StreamColour (RGB + optional per-line Transition),
                  coalesced newest-wins by the library loop.
 lifecycle        Escape / Cancel reverts to the pre-open colour; Enter /
-                 Aceptar persists; on exit the final colour is written with
+                 Accept persists; on exit the final colour is written with
                  SetColour (leaves music mode) and the last-colour cache is
                  updated.
 ```
@@ -207,8 +209,8 @@ lifecycle        Escape / Cancel reverts to the pre-open colour; Enter /
 4. On close/cancel, cancel the context; each `StreamColours` flushes the
    pending colour, leaves music mode with a normal `SetColour`, and returns.
 
-Brightness and transition semantics match `picker.py` and the CLI's stdin
-protocol: transition is per-colour (slider takes effect live), brightness is
+Brightness and transition semantics match the CLI's stdin protocol:
+transition is per-colour (slider takes effect live), brightness is
 applied by scaling RGB before streaming (the stream unit carries colour, not
 a separate brightness channel).
 
@@ -379,10 +381,8 @@ overlay.
 
 ## Out of scope
 
-- The `notuyad` HTTP daemon and `picker.py` stay in notuya-go /
-  `~/.config/tuya`; this module does not replace or modify them. It is an
-  alternative front-end that skips the daemon.
+- The `notuyad` HTTP daemon stays in notuya-go; this module does not replace
+  or modify it. It is an alternative front-end that skips the daemon.
 - Multi-window, remote control, and a scene picker are not planned.
   (Config editing and bulb discovery, previously out of scope, now ship in
   the settings window — see above.)
-- Publishing/tagging notuya-go: dev uses the local `replace`.

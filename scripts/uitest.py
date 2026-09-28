@@ -14,6 +14,9 @@ Full loop (all proven on Hyprland 0.56.2):
     python3 scripts/uitest.py state Colour White
     python3 scripts/uitest.py shot /tmp/x.png # capture the real window (grim, address-based)
     python3 scripts/uitest.py close           # clean exit (no zombie)
+    python3 scripts/uitest.py cage /tmp/x.png White  # full-height headless capture
+                                              # (nested cage, pixman renderer;
+                                              #  extra args = widgets to click first)
 
 State/behaviour commands (dump, click, state) need the app on the a11y bus, so
 launch it with launch (or with GTK_A11Y=atspi yourself). The window commands
@@ -244,6 +247,77 @@ def _pid_alive(pid):
         return False
 
 
+CAGE_MARKER = "/tmp/notuya-gui.uitest.cage-shoot"
+CAGE_SIZE = "800x1100"
+
+
+def cmd_cage(_app, args):
+    """Full-height capture in a nested headless cage compositor.
+
+    usage: uitest.py cage [path] [widget-name...]
+
+    Runs cage with the wlroots headless backend and the pixman (software)
+    renderer -- the GPU path renders black on NVIDIA headless outputs. The
+    output is sized 800x1100 via wlr-randr so nothing is clipped. The app
+    inside cage joins the session a11y bus, so any widget names given are
+    clicked via AT-SPI before the frame is grabbed.
+
+    Requires no other notuya-gui instance on the a11y bus (it would be
+    ambiguous which one the clicks hit).
+    """
+    path = args[0] if args and args[0].endswith(".png") else "/tmp/notuya-gui-cage.png"
+    clicks = args[1:] if args and args[0].endswith(".png") else args
+    try:
+        os.remove(CAGE_MARKER)
+    except OSError:
+        pass
+    inner = (
+        f"wlr-randr --output HEADLESS-1 --custom-mode {CAGE_SIZE} >/dev/null 2>&1; "
+        f"GTK_A11Y=atspi {os.path.abspath(BINARY)} >{LOGFILE} 2>&1 & APP=$!; "
+        f"while [ ! -f {CAGE_MARKER} ]; do sleep 0.2; done; "
+        f"grim {path} && echo GRIM_OK; kill $APP"
+    )
+    env = dict(os.environ)
+    env.pop("WAYLAND_DISPLAY", None)
+    env.pop("DISPLAY", None)
+    env.update(WLR_BACKENDS="headless", WLR_RENDERER="pixman")
+    cage = subprocess.Popen(
+        ["cage", "--", "bash", "-c", inner],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+    )
+    try:
+        app = wait_for_app()
+        if app is None:
+            print("cage: app never appeared on the a11y bus", file=sys.stderr)
+            return 1
+        time.sleep(1.0)  # let the first frame paint
+        for name in clicks:
+            n = find(app, name)
+            if n is None:
+                print(f"cage: widget not found: {name!r}", file=sys.stderr)
+            else:
+                Atspi.Action.do_action(n, 0)
+                time.sleep(0.4)
+                print(f"clicked {name!r} -> [{','.join(flags(n))}]")
+        time.sleep(0.6)  # settle before the grab
+        open(CAGE_MARKER, "w").close()
+        out, _ = cage.communicate(timeout=20)
+    except subprocess.TimeoutExpired:
+        cage.kill()
+        print("cage: timed out", file=sys.stderr)
+        return 1
+    finally:
+        try:
+            os.remove(CAGE_MARKER)
+        except OSError:
+            pass
+    if "GRIM_OK" not in (out or "") or not os.path.exists(path):
+        print("cage: capture failed (no GRIM_OK / missing file)", file=sys.stderr)
+        return 1
+    print(f"saved {path} ({CAGE_SIZE})")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Commands that need the app on the a11y bus
 # ---------------------------------------------------------------------------
@@ -290,12 +364,13 @@ def cmd_state(app, args):
     return rc
 
 
-# launch/shot/close don't need the a11y app node; the rest do.
-NO_APP = {"launch", "shot", "close"}
+# launch/shot/close/cage don't need a pre-existing a11y app node; the rest do.
+NO_APP = {"launch", "shot", "close", "cage"}
 COMMANDS = {
     "launch": cmd_launch,
     "shot": cmd_shot,
     "close": cmd_close,
+    "cage": cmd_cage,
     "dump": cmd_dump,
     "click": cmd_click,
     "state": cmd_state,

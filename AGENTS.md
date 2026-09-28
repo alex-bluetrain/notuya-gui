@@ -321,6 +321,37 @@ all addressable by name.
 `omarchy capture screenshot windows save`) is an *optional* visual confirm on
 top of AT-SPI assertions, never the verification mechanism itself.
 
+One caveat for `shot`: it captures the window at whatever size Hyprland has
+tiled it to, so on a busy workspace the Lights tab (tall: wheel + sliders) can
+be clipped at the bottom. When a *full-height* capture matters, use the `cage`
+subcommand — it renders the app in a nested headless `cage` compositor at a
+fixed 800×1100 output, clicks any named widgets via AT-SPI, and `grim`s the
+frame. Deterministic geometry, nothing clipped, fully isolated from the live
+Hyprland session:
+
+```bash
+python3 scripts/uitest.py cage /tmp/colour.png          # capture as-launched
+python3 scripts/uitest.py cage /tmp/white.png White     # click White, then capture
+```
+
+Two hard-won requirements baked into the subcommand (do not "simplify" them
+away):
+
+- **`WLR_RENDERER=pixman` is mandatory.** On this box's NVIDIA proprietary
+  driver, the wlroots headless backend's GPU path composites black frames —
+  the app runs, grim succeeds, and the PNG is solid black. The pixman
+  (software) renderer is the fix.
+- **Output size is set with `wlr-randr --output HEADLESS-1 --custom-mode`**
+  inside cage. The headless output defaults to 1280×720, which clips the
+  Lights tab; there is no env var for the size (`WLR_HEADLESS_OUTPUT_WIDTH`
+  does not exist). `wlr-randr` is an Arch pkg, installed alongside `cage`
+  (`pkexec pacman -S --needed cage wlr-randr`).
+
+The app inside cage joins the *session* a11y bus, so the same AT-SPI helpers
+drive it — that's how the subcommand clicks widgets before grabbing. This is
+still a visual-only aid: AT-SPI assertions remain the state/behaviour
+verifier.
+
 ## Hyprland window rules
 
 The picker is a layer-shell overlay, so under Hyprland it is a layer

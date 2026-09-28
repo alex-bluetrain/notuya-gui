@@ -53,6 +53,10 @@ scale.temp-scale slider {
 // playground. Matches the scene editor's wheel for a consistent feel.
 const playgroundWheelSize = 240
 
+// playgroundWheelPad pads the wheel's drawing area so the thumb — whose centre
+// rides the disc edge at full saturation — can overhang without being clipped.
+const playgroundWheelPad = 16
+
 // playground is the Lights tab: a manual "playground" with a checkbox list of
 // devices and a single set of controls (colour wheel, mode, brightness, temp)
 // whose changes are broadcast to every checked light. It reuses the same
@@ -224,8 +228,8 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	pg.wheelRow.SetMarginBottom(8)
 
 	pg.wheel = gtk.NewDrawingArea()
-	pg.wheel.SetContentWidth(playgroundWheelSize)
-	pg.wheel.SetContentHeight(playgroundWheelSize)
+	pg.wheel.SetContentWidth(playgroundWheelSize + 2*playgroundWheelPad)
+	pg.wheel.SetContentHeight(playgroundWheelSize + 2*playgroundWheelPad)
 	pg.wheel.SetHAlign(gtk.AlignCenter)
 	pg.wheel.SetDrawFunc(pg.drawWheel)
 	pg.wheelRow.Append(pg.wheel)
@@ -513,8 +517,10 @@ func (pg *playground) setTemp(v float64) {
 }
 
 // setSelection updates the shared hue/sat from wheel coordinates and redraws.
+// The drawing area is padded around the disc, so the pad is subtracted to get
+// disc-local coordinates.
 func (pg *playground) setSelection(x, y float64) {
-	pg.hue, pg.sat = coordsToHSSized(x, y, playgroundWheelSize)
+	pg.hue, pg.sat = coordsToHSSized(x-playgroundWheelPad, y-playgroundWheelPad, playgroundWheelSize)
 	pg.wheel.QueueDraw()
 }
 
@@ -604,12 +610,15 @@ func (t *playgroundTarget) drawSwatch(_ *gtk.DrawingArea, cr *cairo.Context, wid
 func (pg *playground) drawWheel(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
 	size := float64(playgroundWheelSize)
 	radius := size / 2.0
+	pad := float64(playgroundWheelPad)
+	cx, cy := pad+radius, pad+radius
 
 	// Soft, antialiased disc edge: clip the raw HSV bitmap to a circle a hair
-	// inside the drawing area so its hard pixel edge never shows.
+	// inside its bounds so its hard pixel edge never shows.
 	cr.Save()
-	cr.Arc(radius, radius, radius-1.5, 0, 2*math.Pi)
+	cr.Arc(cx, cy, radius-1.5, 0, 2*math.Pi)
 	cr.Clip()
+	cr.Translate(pad, pad)
 	scale := size / float64(wheelSize)
 	cr.Scale(scale, scale)
 	cr.SetSourceSurface(pg.app.wheelSurface, 0, 0)
@@ -617,19 +626,20 @@ func (pg *playground) drawWheel(_ *gtk.DrawingArea, cr *cairo.Context, width, he
 	cr.Restore()
 
 	// Subtle rim so the near-white centre region doesn't bleed into the card.
-	cr.Arc(radius, radius, radius-1, 0, 2*math.Pi)
+	cr.Arc(cx, cy, radius-1, 0, 2*math.Pi)
 	cr.SetSourceRGBA(0, 0, 0, 0.18)
 	cr.SetLineWidth(1.5)
 	cr.Stroke()
 
 	// Hue-style thumb: a large white ring whose centre is filled with the
 	// selected colour at the current brightness — the thumb IS the preview.
-	// Its centre is clamped inside the disc so it never clips at full sat.
+	// Its centre rides all the way to the disc edge at full saturation; the
+	// padded drawing area keeps the overhang from being clipped.
 	const thumbR = 12.0
 	angle := pg.hue * 2 * math.Pi
-	dist := pg.sat * (radius - thumbR - 2)
-	sx := radius + dist*math.Cos(angle)
-	sy := radius + dist*math.Sin(angle)
+	dist := pg.sat * radius
+	sx := cx + dist*math.Cos(angle)
+	sy := cy + dist*math.Sin(angle)
 
 	v := 1.0
 	if pg.bright != nil {

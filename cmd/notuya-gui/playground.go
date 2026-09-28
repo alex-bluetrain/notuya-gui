@@ -9,9 +9,45 @@ import (
 	"github.com/averstraeten/notuya-go/pkg/device"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/cairo"
+	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	coreglib "github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
+
+// tempScaleCSS paints the temperature scale's trough with the warm→cool
+// gradient and neutralises GTK's default trough styling so the ramp reads as
+// one clean bar: the filled ("highlight") and unfilled halves share the same
+// gradient, and the slider keeps a round white knob like the Brightness scale.
+const tempScaleCSS = `
+scale.temp-scale trough {
+  background-image: linear-gradient(to right,
+    rgb(255,166,70) 0%,
+    rgb(255,246,235) 50%,
+    rgb(158,202,255) 100%);
+  background-color: transparent;
+  border: none;
+  min-height: 10px;
+  border-radius: 6px;
+}
+scale.temp-scale highlight {
+  background-color: transparent;
+  background-image: none;
+  border: none;
+}
+scale.temp-scale fill {
+  background-color: transparent;
+  background-image: none;
+}
+scale.temp-scale slider {
+  background-color: #ffffff;
+  border: 1px solid alpha(#000, 0.2);
+  box-shadow: 0 1px 3px alpha(#000, 0.35);
+  min-width: 18px;
+  min-height: 18px;
+  border-radius: 50%;
+  margin: -6px;
+}
+`
 
 // playgroundWheelSize is the diameter of the shared colour wheel in the Lights
 // playground. Matches the scene editor's wheel for a consistent feel.
@@ -35,10 +71,9 @@ type playground struct {
 	swatch    *gtk.DrawingArea
 	bright    *gtk.Scale
 	brightPct *gtk.Label
-	tempRow   *gtk.Box
-	tempStrip *gtk.DrawingArea
-	temp      *gtk.Scale
-	trans     *adw.ToggleGroup
+	tempRow *gtk.Box
+	temp    *gtk.Scale
+	trans   *adw.ToggleGroup
 
 	// current shared selection
 	hue  float64
@@ -265,7 +300,6 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	})
 	brightRow.Append(pg.bright)
 	brightRow.Append(pg.brightPct)
-	inner.Append(brightRow)
 	pg.bright.SetValue(100)
 
 	// Bracket brightness drags with a live music stream so the change fades
@@ -297,25 +331,38 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	})
 	pg.bright.AddController(brightDrag)
 
-	// Temperature control (white mode): a warm→cool gradient strip that shows
-	// the colour you're picking, with the slider beneath it as the input. The
-	// strip paints a marker at the current temperature so the slider reads like
-	// a temperature ramp rather than a bare 0–100 track.
-	pg.tempRow = gtk.NewBox(gtk.OrientationVertical, 4)
-	pg.tempStrip = gtk.NewDrawingArea()
-	pg.tempStrip.SetContentHeight(18)
-	pg.tempStrip.SetHExpand(true)
-	pg.tempStrip.SetDrawFunc(pg.drawTempStrip)
-	pg.tempRow.Append(pg.tempStrip)
-	tempScaleRow := labelledScaleSimple("Warm → Cool", &pg.temp, 0, 100, func(v float64) {
-		pg.tempStrip.QueueDraw()
+	// Temperature control (white mode): the same native gtk.Scale as Brightness,
+	// so the two rows match. A CSS provider paints this one scale's trough with
+	// the warm→cool gradient (see tempScaleCSS), and hides the filled/unfilled
+	// split and the numeric value, so the gradient reads as one clean ramp.
+	pg.tempRow = gtk.NewBox(gtk.OrientationHorizontal, 8)
+	tempLbl := gtk.NewLabel("Temperature")
+	tempLbl.SetWidthChars(16)
+	tempLbl.SetXAlign(0.0)
+	pg.tempRow.Append(tempLbl)
+	pg.temp = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 0, 100, 1)
+	pg.temp.SetHExpand(true)
+	pg.temp.SetDrawValue(false)
+	pg.temp.SetRoundDigits(0)
+	pg.temp.AddCSSClass("temp-scale")
+	disableScaleScroll(pg.temp)
+	pg.temp.ConnectValueChanged(func() {
 		if pg.suppress {
 			return
 		}
-		pg.setTemp(v)
+		pg.setTemp(pg.temp.Value())
 	})
-	pg.tempRow.Append(tempScaleRow)
+	if prov := gtk.NewCSSProvider(); prov != nil {
+		prov.LoadFromData(tempScaleCSS)
+		if disp := gdk.DisplayGetDefault(); disp != nil {
+			gtk.StyleContextAddProviderForDisplay(disp, prov, gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+		}
+	}
+	pg.tempRow.Append(pg.temp)
+	// Temperature sits above Brightness so white mode mirrors colour mode's
+	// wheel-then-brightness order.
 	inner.Append(pg.tempRow)
+	inner.Append(brightRow)
 
 	// Transition toggle: DP 28's change mode is boolean (0 = direct/jump,
 	// 1 = gradual/fade), so this is a two-way toggle, not a range. Jump snaps
@@ -595,41 +642,6 @@ func (pg *playground) drawWheel(_ *gtk.DrawingArea, cr *cairo.Context, width, he
 	cr.Arc(sx, sy, 5, 0, 2*math.Pi)
 	cr.SetSourceRGBA(1, 1, 1, 0.95)
 	cr.SetLineWidth(2)
-	cr.Stroke()
-}
-
-// drawTempStrip paints the warm→cool temperature ramp as a rounded bar with a
-// marker at the current slider value, matching the endpoints used for the scene
-// tile gradients (warm 255,190,120 → cool 201,226,255).
-func (pg *playground) drawTempStrip(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
-	w, h := float64(width), float64(height)
-	radius := h / 2.0
-	roundedRect(cr, 0, 0, w, h, radius)
-	if grad, err := cairo.NewPatternLinear(0, 0, w, 0); err == nil {
-		grad.AddColorStopRGB(0, 255.0/255, 190.0/255, 120.0/255)
-		grad.AddColorStopRGB(1, 201.0/255, 226.0/255, 255.0/255)
-		cr.SetSource(grad)
-	}
-	cr.Fill()
-
-	// Marker at the current temperature (0 = warm/left, 100 = cool/right).
-	t := 0.0
-	if pg.temp != nil {
-		t = pg.temp.Value() / 100.0
-	}
-	if t < 0 {
-		t = 0
-	} else if t > 1 {
-		t = 1
-	}
-	mx := radius + t*(w-2*radius)
-	cr.Arc(mx, h/2, h/2-2, 0, 2*math.Pi)
-	cr.SetSourceRGBA(1, 1, 1, 0.95)
-	cr.SetLineWidth(2.5)
-	cr.Stroke()
-	cr.Arc(mx, h/2, h/2-2, 0, 2*math.Pi)
-	cr.SetSourceRGBA(0, 0, 0, 0.35)
-	cr.SetLineWidth(1)
 	cr.Stroke()
 }
 

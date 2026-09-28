@@ -520,7 +520,7 @@ func newModeToggle(onChange func(isWhite bool)) *adw.ToggleGroup {
 // suppress flag in the caller.
 func newTransitionToggle(onChange func(isFade bool)) *adw.ToggleGroup {
 	group := adw.NewToggleGroup()
-	group.SetHAlign(gtk.AlignStart)
+	group.SetHExpand(true)
 
 	jump := adw.NewToggle()
 	jump.SetName("jump")

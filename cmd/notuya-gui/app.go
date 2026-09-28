@@ -108,7 +108,7 @@ func (a *desktopApp) activate() {
 	// stack.AddTitledWithIcon(a.buildRoomsTab(panelByID), "rooms", "Rooms", "user-home-symbolic")
 	_ = panelByID
 	stack.AddTitledWithIcon(a.buildSettingsTab(), "settings", "Settings", "emblem-system-symbolic")
-	stack.SetVisibleChildName("scenes")
+	stack.SetVisibleChildName("lights")
 
 	switcher := adw.NewViewSwitcher()
 	switcher.SetPolicy(adw.ViewSwitcherPolicyWide)

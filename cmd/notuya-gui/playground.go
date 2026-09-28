@@ -67,13 +67,12 @@ type playground struct {
 
 	modeToggle *adw.ToggleGroup
 	wheelRow   *gtk.Box
-	wheel     *gtk.DrawingArea
-	swatch    *gtk.DrawingArea
-	bright    *gtk.Scale
-	brightPct *gtk.Label
-	tempRow *gtk.Box
-	temp    *gtk.Scale
-	trans   *adw.ToggleGroup
+	wheel      *gtk.DrawingArea
+	bright     *gtk.Scale
+	brightPct  *gtk.Label
+	tempRow    *gtk.Box
+	temp       *gtk.Scale
+	trans      *adw.ToggleGroup
 
 	// current shared selection
 	hue  float64
@@ -189,11 +188,13 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	inner.SetMarginEnd(12)
 	controls.Append(inner)
 
-	// Power switch for the selected lights.
+	// Power switch for the selected lights: label at the start, switch at the
+	// end, spanning the card like an AdwActionRow so the card keeps one
+	// alignment system.
 	powerRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	powerLabel := gtk.NewLabel("Power")
-	powerLabel.SetWidthChars(16)
 	powerLabel.SetXAlign(0.0)
+	powerLabel.SetHExpand(true)
 	powerRow.Append(powerLabel)
 	powerSwitch := gtk.NewSwitch()
 	powerSwitch.SetVAlign(gtk.AlignCenter)
@@ -204,24 +205,19 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	powerRow.Append(powerSwitch)
 	inner.Append(powerRow)
 
-	// Mode selector: an AdwToggleGroup with Colour|White icon toggles.
-	modeRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	modeLabel := gtk.NewLabel("Mode")
-	modeLabel.SetWidthChars(16)
-	modeLabel.SetXAlign(0.0)
-	modeRow.Append(modeLabel)
+	// Mode selector: a full-width Colour|White segmented toggle. No label —
+	// the control is self-evident next to the wheel/temperature slider.
 	pg.modeToggle = newModeToggle(func(bool) {
 		if pg.suppress {
 			return
 		}
 		pg.onModeChanged()
 	})
-	modeRow.Append(pg.modeToggle)
-	inner.Append(modeRow)
+	inner.Append(pg.modeToggle)
 
-	// Colour wheel + preview swatch (colour mode). The wheel is the visual
-	// focus: a large disc centred in the card with the live preview swatch
-	// beneath it, Hue-app style, rather than a small wheel pinned to one corner.
+	// Colour wheel (colour mode). The wheel is the visual focus: a large soft-
+	// edged disc centred in the card whose thumb doubles as the live colour
+	// preview, Hue-app style — no separate swatch.
 	pg.wheelRow = gtk.NewBox(gtk.OrientationVertical, 12)
 	pg.wheelRow.SetHAlign(gtk.AlignCenter)
 	pg.wheelRow.SetMarginTop(8)
@@ -233,13 +229,6 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	pg.wheel.SetHAlign(gtk.AlignCenter)
 	pg.wheel.SetDrawFunc(pg.drawWheel)
 	pg.wheelRow.Append(pg.wheel)
-
-	pg.swatch = gtk.NewDrawingArea()
-	pg.swatch.SetContentWidth(120)
-	pg.swatch.SetContentHeight(28)
-	pg.swatch.SetHAlign(gtk.AlignCenter)
-	pg.swatch.SetDrawFunc(pg.drawSwatch)
-	pg.wheelRow.Append(pg.swatch)
 	inner.Append(pg.wheelRow)
 
 	// Wheel drag → live preview on every checked light + shared hue/sat.
@@ -272,14 +261,13 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	})
 	pg.wheel.AddController(drag)
 
-	// Brightness slider with a live percent readout. Built inline (rather than
-	// via labelledScaleSimple) so the value shows as "72%" in a fixed-width
-	// label instead of a bare number that shifts the slider width as it changes.
+	// Brightness slider with a live percent readout. Full-width, prefixed by a
+	// brightness icon rather than a text label column, so every control in the
+	// card shares one alignment rhythm.
 	brightRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	brightLbl := gtk.NewLabel("Brightness")
-	brightLbl.SetWidthChars(16)
-	brightLbl.SetXAlign(0.0)
-	brightRow.Append(brightLbl)
+	brightIcon := gtk.NewImageFromIconName("display-brightness-symbolic")
+	brightIcon.AddCSSClass("dim-label")
+	brightRow.Append(brightIcon)
 	pg.bright = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 1, 100, 1)
 	pg.bright.SetHExpand(true)
 	pg.bright.SetDrawValue(false)
@@ -292,7 +280,7 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	pg.bright.ConnectValueChanged(func() {
 		v := pg.bright.Value()
 		pg.brightPct.SetText(fmt.Sprintf("%d%%", int(v)))
-		pg.swatch.QueueDraw()
+		pg.wheel.QueueDraw()
 		if pg.suppress {
 			return
 		}
@@ -336,10 +324,9 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	// the warm→cool gradient (see tempScaleCSS), and hides the filled/unfilled
 	// split and the numeric value, so the gradient reads as one clean ramp.
 	pg.tempRow = gtk.NewBox(gtk.OrientationHorizontal, 8)
-	tempLbl := gtk.NewLabel("Temperature")
-	tempLbl.SetWidthChars(16)
-	tempLbl.SetXAlign(0.0)
-	pg.tempRow.Append(tempLbl)
+	tempIcon := gtk.NewImageFromIconName("night-light-symbolic")
+	tempIcon.AddCSSClass("dim-label")
+	pg.tempRow.Append(tempIcon)
 	pg.temp = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 0, 100, 1)
 	pg.temp.SetHExpand(true)
 	pg.temp.SetDrawValue(false)
@@ -368,11 +355,6 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	// 1 = gradual/fade), so this is a two-way toggle, not a range. Jump snaps
 	// to each colour instantly (steppy); Fade smears one colour into the next.
 	// Takes effect live mid-drag.
-	fadeRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	fadeLabel := gtk.NewLabel("Transition")
-	fadeLabel.SetWidthChars(16)
-	fadeLabel.SetXAlign(0.0)
-	fadeRow.Append(fadeLabel)
 	pg.trans = newTransitionToggle(func(isFade bool) {
 		if pg.suppress {
 			return
@@ -381,8 +363,7 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 			t.ctl.SetLiveTransition(transitionValue(isFade))
 		}
 	})
-	fadeRow.Append(pg.trans)
-	inner.Append(fadeRow)
+	inner.Append(pg.trans)
 	if device.DefaultTransition != 0 {
 		pg.trans.SetActiveName("fade")
 	} else {
@@ -535,7 +516,6 @@ func (pg *playground) setTemp(v float64) {
 func (pg *playground) setSelection(x, y float64) {
 	pg.hue, pg.sat = coordsToHSSized(x, y, playgroundWheelSize)
 	pg.wheel.QueueDraw()
-	pg.swatch.QueueDraw()
 }
 
 func (pg *playground) selRGB() device.RGB {
@@ -622,44 +602,52 @@ func (t *playgroundTarget) drawSwatch(_ *gtk.DrawingArea, cr *cairo.Context, wid
 }
 
 func (pg *playground) drawWheel(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
-	scale := float64(playgroundWheelSize) / float64(wheelSize)
+	size := float64(playgroundWheelSize)
+	radius := size / 2.0
+
+	// Soft, antialiased disc edge: clip the raw HSV bitmap to a circle a hair
+	// inside the drawing area so its hard pixel edge never shows.
 	cr.Save()
+	cr.Arc(radius, radius, radius-1.5, 0, 2*math.Pi)
+	cr.Clip()
+	scale := size / float64(wheelSize)
 	cr.Scale(scale, scale)
 	cr.SetSourceSurface(pg.app.wheelSurface, 0, 0)
 	cr.Paint()
 	cr.Restore()
 
-	radius := float64(playgroundWheelSize) / 2.0
+	// Subtle rim so the near-white centre region doesn't bleed into the card.
+	cr.Arc(radius, radius, radius-1, 0, 2*math.Pi)
+	cr.SetSourceRGBA(0, 0, 0, 0.18)
+	cr.SetLineWidth(1.5)
+	cr.Stroke()
+
+	// Hue-style thumb: a large white ring whose centre is filled with the
+	// selected colour at the current brightness — the thumb IS the preview.
+	// Its centre is clamped inside the disc so it never clips at full sat.
+	const thumbR = 12.0
 	angle := pg.hue * 2 * math.Pi
-	dist := pg.sat * radius
+	dist := pg.sat * (radius - thumbR - 2)
 	sx := radius + dist*math.Cos(angle)
 	sy := radius + dist*math.Sin(angle)
 
-	cr.Arc(sx, sy, 7, 0, 2*math.Pi)
-	cr.SetSourceRGBA(0, 0, 0, 0.7)
-	cr.SetLineWidth(2.5)
-	cr.Stroke()
-	cr.Arc(sx, sy, 5, 0, 2*math.Pi)
-	cr.SetSourceRGBA(1, 1, 1, 0.95)
-	cr.SetLineWidth(2)
-	cr.Stroke()
-}
-
-func (pg *playground) drawSwatch(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
-	// Preview the colour at the current brightness so the swatch reflects what
-	// the lights will actually show, not just the hue/sat picked on the wheel.
 	v := 1.0
 	if pg.bright != nil {
 		v = pg.bright.Value() / 100.0
 	}
 	r, g, b := hsvToRGBInt(pg.hue, pg.sat, v)
-	w, h := float64(width), float64(height)
-	radius := h / 2.0
-	roundedRect(cr, 0, 0, w, h, radius)
+
+	// Drop shadow.
+	cr.Arc(sx, sy+1.5, thumbR+1, 0, 2*math.Pi)
+	cr.SetSourceRGBA(0, 0, 0, 0.30)
+	cr.Fill()
+	// Colour-filled centre (live preview).
+	cr.Arc(sx, sy, thumbR, 0, 2*math.Pi)
 	cr.SetSourceRGB(float64(r)/255, float64(g)/255, float64(b)/255)
 	cr.Fill()
-	roundedRect(cr, 0.5, 0.5, w-1, h-1, radius)
-	cr.SetSourceRGBA(0, 0, 0, 0.15)
-	cr.SetLineWidth(1)
+	// Thick white ring.
+	cr.Arc(sx, sy, thumbR-1.5, 0, 2*math.Pi)
+	cr.SetSourceRGBA(1, 1, 1, 0.98)
+	cr.SetLineWidth(3)
 	cr.Stroke()
 }

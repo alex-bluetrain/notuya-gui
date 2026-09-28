@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "go",
+      "package-name": "notuya-gui",
+      "// include-component-in-tag": "Go's module proxy only resolves root-module tags shaped vX.Y.Z, so the component name must stay out of the tag.",
+      "include-component-in-tag": false
+    }
+  }
+}

@@ -1,0 +1,17 @@
+title = "notuya-gui"
+
+[extend]
+useDefault = true
+
+# Only the fabricated placeholders used in documentation examples are
+# exempt. This is deliberately a list of exact strings rather than a path
+# or filetype exclusion: a real Tuya local_key is high-entropy and must
+# still trip the scanner wherever it appears, including in docs.
+[[rules]]
+id = "generic-api-key"
+[rules.allowlist]
+regexTarget = "match"
+regexes = [
+  '''fake-local-key16''',
+  '''ebfake[0-9]+''',
+]

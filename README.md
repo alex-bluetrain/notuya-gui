@@ -73,10 +73,10 @@ contains, and a device may belong to several rooms:
 ```json
 {
   "devices": [
-    { "device_id": "eb…14", "ip_address": "192.168.1.4", "local_key": "…", "name": "luz 1" }
+    { "device_id": "ebfake1111111111111111", "ip_address": "192.0.2.10", "local_key": "fake-local-key16", "name": "luz 1" }
   ],
   "rooms": [
-    { "name": "Salón", "devices": ["eb…14"] }
+    { "name": "Salón", "devices": ["ebfake1111111111111111"] }
   ],
   "follow_mode": "wallpaper"
 }

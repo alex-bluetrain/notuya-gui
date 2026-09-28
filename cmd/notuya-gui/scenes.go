@@ -189,19 +189,14 @@ func sceneGradientCSS(class string, sc Scene) string {
 }
 
 // applyScene fans a scene out to the lights it names, one goroutine per state,
-// off the GTK thread. Stale device_ids (no matching control) are skipped and
-// per-device errors are ignored — applying is best-effort, matching the
-// group-power behaviour in app.go.
+// off the GTK thread. Stale device_ids (no matching control) are skipped;
+// applying is best-effort, so a per-device failure is logged, not fatal.
 func applyScene(scene Scene, byID map[string]*control) {
 	for _, st := range scene.States {
 		ctl, ok := byID[st.DeviceID]
 		if !ok {
 			continue
 		}
-		go func(ctl *control, st SceneState) {
-			ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-			defer cancel()
-			_ = ctl.ApplyState(ctx, st)
-		}(ctl, st)
+		ctl.async("apply scene", func(ctx context.Context) error { return ctl.ApplyState(ctx, st) })
 	}
 }

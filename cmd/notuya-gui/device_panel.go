@@ -3,19 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
 
 	coreglib "github.com/diamondburned/gotk4/pkg/glib/v2"
-	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
-// devicePanel is a headless per-device status cache. It no longer owns any
-// widgets: the Lights tab is now the shared "playground" (playground.go), and
-// the Rooms tab only needs each device's last-known on/off state to build its
-// summary rows. devicePanel wraps one control (its persistent session) and
-// caches the result of the most recent Refresh. All device I/O runs off the
-// GTK thread; results are marshalled back with IdleAdd.
+// devicePanel is a headless per-device status cache for the Rooms tab, which
+// only needs each device's last-known on/off state to build its summary rows.
+// It wraps one control (its persistent session) and caches the most recent
+// Refresh. Device I/O runs off the GTK thread; results return via IdleAdd.
 type devicePanel struct {
 	ctl *control
 
@@ -59,34 +55,4 @@ func (p *devicePanel) refresh() {
 func (p *devicePanel) setPowerOptimistic(on bool) {
 	p.lastOn = on
 	p.hasState = true
-}
-
-// disableScaleScroll prevents a GtkScale from capturing mouse-wheel events so
-// the parent ScrolledWindow scrolls normally when the cursor passes over a
-// slider. A capture-phase controller intercepts the scroll before the Scale's
-// own handler and marks it handled, letting the ScrolledWindow keep scrolling.
-func disableScaleScroll(scale *gtk.Scale) {
-	ec := gtk.NewEventControllerScroll(gtk.EventControllerScrollVertical)
-	ec.SetPropagationPhase(gtk.PhaseCapture)
-	ec.ConnectScroll(func(dx, dy float64) bool { return true })
-	scale.AddController(ec)
-}
-
-// coordsToHSSized maps a point in a colour wheel of the given diameter to
-// (hue, saturation), so the full-screen picker, the per-scene editor wheel and
-// the Lights-tab playground wheel all share one mapping.
-func coordsToHSSized(x, y, size float64) (h, s float64) {
-	radius := size / 2.0
-	dx := x - radius
-	dy := y - radius
-	dist := math.Sqrt(dx*dx + dy*dy)
-	if dist > radius {
-		dist = radius
-	}
-	h = math.Mod(math.Atan2(dy, dx)/(2*math.Pi), 1.0)
-	if h < 0 {
-		h += 1.0
-	}
-	s = dist / radius
-	return h, s
 }

@@ -3,3 +3,4 @@
 
 # Agent tooling
 .mastracode/
+__pycache__/

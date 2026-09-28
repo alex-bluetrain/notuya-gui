@@ -111,17 +111,25 @@ Single binary, one module. Files under `cmd/notuya-gui/`:
 main.go          entry point: flag parsing → runApp | runPicker | runSettings
 picker.go        the --picker layer-shell colour-wheel overlay
 app.go           the default desktop window (libadwaita: AdwApplicationWindow +
-                 AdwHeaderBar + AdwViewSwitcher/ViewStack): Lights/Rooms/Scenes/
-                 Settings tabs. Rooms tab = mobile-style summary rows (room name,
-                 "N of M lights on", master switch) reusing the Lights panels,
-                 plus room CRUD (create/rename/delete + membership).
-device_panel.go  per-device control card (AdwActionRow header + power/bright/
-                 colour/temp/status; colour wheel is a plain DrawingArea)
+                 AdwHeaderBar + AdwViewSwitcher/ViewStack): Scenes (default)/
+                 Lights/Settings tabs, plus the Rooms tab (built but hidden
+                 behind `roomsTabEnabled = false`): mobile-style summary rows
+                 (room name, "N of M lights on", master switch) + room CRUD.
+lights_tab.go    the Lights tab: per-light rows (select checkbox, live swatch,
+                 brightness %, own power switch) above one shared colourControls
+                 + Instant|Smooth toggle that broadcasts to every checked light;
+                 rows mirror each broadcast optimistically
+colour_controls.go  shared colour-selection widget (Colour|White toggle, soft
+                 wheel with ring-thumb preview, gradient temperature scale,
+                 brightness scale + %) used by the Lights tab and scene editor;
+                 also the mode/transition toggles and wheel coordinate mapping
+device_panel.go  headless per-device on/off cache feeding the Rooms summaries
 control.go       per-device controller: owns a bulb session, command methods +
-                 Refresh + ApplyState; borrows the streamer for live colour drag
-scenes.go        scene apply (applyScene) + deviceStatus→SceneState mapping
-scene_editor.go  the Scenes editor: sceneEditor + per-device sceneDeviceRow,
-                 AdwWindow modal with live (destructive) preview
+                 Refresh + ApplyState + async (fire-and-forget, timed, logged);
+                 borrows the streamer for live colour drag
+scenes.go        scene tiles (gradient cards), applyScene, deviceStatus→SceneState
+scene_editor.go  the Scenes editor: sceneEditor + per-device sceneDeviceRow
+                 (each a colourControls), AdwWindow modal with live preview
 stream.go        music-mode streamer (used by picker AND app live-drag)
 settings.go      settings window/tab: devices + LAN discovery (rooms live in app.go)
 config.go        Config/Device/Room/Scene types, groupByRoom, saveConfig
@@ -136,29 +144,34 @@ closes that command session and borrows the `streamer` (music mode) so the drag
 is smooth, then leaves music mode with a final `SetColour` and lets the command
 session re-open lazily.
 
-Colour-wheel drawing and the coordinate→(hue,sat) mapping are shared between the
-picker and the panel (`coordsToHSSized`, the cached wheel surface).
+The wheel bitmap (cached surface) and the coordinate→(hue,sat) mapping
+(`coordsToHSSized`) are shared by the picker and `colourControls`, so the Lights
+tab and the scene editor render and behave identically.
 
 The UI is in English. Scenes are editable, not capture-only. **New scene** opens
-`sceneEditor` (`scene_editor.go`) for a new scene; each row's **Edit** button
+`sceneEditor` (`scene_editor.go`) for a new scene (the dashed "+" tile in the
+Scenes grid); clicking a tile applies it, and each tile's **Edit** button
 reopens it for an existing one. The editor is an `AdwWindow` modal with one
 `sceneDeviceRow` per configured device (include checkbox, power switch,
-Color/White selector, colour wheel + swatch, brightness/temp sliders) that edits
+plus a `colourControls`: Colour/White, wheel, brightness/temp) that edits
 an in-memory `SceneState`. Preview is **live and destructive**: the row reuses
 the same `control` instances as the Lights tab (via `a.byID`, mutex-serialized —
 no second session per bulb), driving the wheel through `BeginLiveDrag`/
 `UpdateLiveDrag`/`EndLiveDrag` and the sliders/power/mode through the discrete
 setters, all off-thread. Nothing is restored on close. **Save** writes the built
 `[]SceneState` over `a.cfg.Scenes[index]` (or appends when index == -1) and
-persists via `saveCfg`; **Cancel** keeps the bulbs at their last preview.
+persists via `saveCfg`; closing (Escape/window close) keeps the bulbs at their
+last preview.
 
-The **Rooms** tab (`buildRoomsTab`) is a read/control overview built from
+The **Rooms** tab (`buildRoomsTab`) is currently hidden (`roomsTabEnabled =
+false` in `app.go`; the code still compiles so it cannot rot). It is a
+read/control overview built from
 `groupByRoom`: one `roomRow` per room (an `AdwActionRow` with a `user-home`
 icon, the room name, a live "N of M lights on" subtitle, and a master `Switch`).
 Each `roomRow` holds the room's `*devicePanel`s and recomputes its summary from
 their cached `lastOn`/`hasState` whenever a member panel refreshes (`onRefresh`)
 or is toggled (`onToggle`) — no extra device queries. Flipping the master switch
-calls `groupPower` and optimistically syncs each member panel's switch via
+calls `groupPower` and optimistically syncs each member panel's cached state via
 `setPowerOptimistic`. Below the control rows the same tab hosts **room
 management**: a room list, a name entry with add/rename/remove buttons, and
 membership checkboxes for the selected room (`refreshRoomList`, `loadRoomForm`,

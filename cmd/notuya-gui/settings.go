@@ -20,7 +20,7 @@ const scanTimeout = 4 * time.Second
 // settings is the config-editing + discovery window. Unlike the picker it is
 // an ordinary GTK toplevel (no layer-shell), and it never talks to the bulbs:
 // it only edits the shared config.json. State lives in an in-memory slice
-// seeded from the loaded config; nothing is written until Guardar.
+// seeded from the loaded config; nothing is written until Save.
 type settings struct {
 	app        *adw.Application
 	window     *adw.ApplicationWindow

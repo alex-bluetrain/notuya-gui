@@ -82,7 +82,7 @@ type colourCallbacks struct {
 }
 
 // colourControls is the shared colour-selection widget set used by the Lights
-// playground and the scene editor: a Colour|White segmented toggle, the
+// tab and the scene editor: a Colour|White segmented toggle, the
 // soft-edged wheel whose ring thumb doubles as the live preview, a
 // gradient-trough temperature scale, and a brightness scale with a percent
 // readout. The owner appends the rows via AppendTo and reacts through
@@ -305,4 +305,84 @@ func (cc *colourControls) drawWheel(_ *gtk.DrawingArea, cr *cairo.Context, width
 	cr.SetSourceRGBA(1, 1, 1, 0.98)
 	cr.SetLineWidth(3)
 	cr.Stroke()
+}
+
+// newModeToggle builds the Colour|White segmented toggle: "colour" (wheel) and
+// "white" (colour temperature). onChange fires with isWhite = true when White
+// becomes active — including on programmatic SetActiveName("colour"|"white"),
+// so callers guard it with a suppress flag.
+func newModeToggle(onChange func(isWhite bool)) *adw.ToggleGroup {
+	group := adw.NewToggleGroup()
+	group.SetHExpand(true)
+
+	colour := adw.NewToggle()
+	colour.SetName("colour")
+	colour.SetLabel("Colour")
+	colour.SetIconName("color-select-symbolic")
+	group.Add(colour)
+
+	white := adw.NewToggle()
+	white.SetName("white")
+	white.SetLabel("White")
+	white.SetIconName("weather-clear-symbolic")
+	group.Add(white)
+
+	group.NotifyProperty("active-name", func() {
+		onChange(group.ActiveName() == "white")
+	})
+	return group
+}
+
+// newTransitionToggle builds the Instant|Smooth segmented toggle for DP 28's
+// boolean change mode: "jump" (instant snap) and "fade" (gradual). onChange
+// fires with isFade = true when Smooth becomes active — including on
+// programmatic SetActiveName("jump"|"fade"), so callers guard it.
+func newTransitionToggle(onChange func(isFade bool)) *adw.ToggleGroup {
+	group := adw.NewToggleGroup()
+	group.SetHExpand(true)
+
+	jump := adw.NewToggle()
+	jump.SetName("jump")
+	jump.SetLabel("Instant")
+	group.Add(jump)
+
+	fade := adw.NewToggle()
+	fade.SetName("fade")
+	fade.SetLabel("Smooth")
+	group.Add(fade)
+
+	group.NotifyProperty("active-name", func() {
+		onChange(group.ActiveName() == "fade")
+	})
+	return group
+}
+
+// disableScaleScroll prevents a GtkScale from capturing mouse-wheel events so
+// the parent ScrolledWindow scrolls normally when the cursor passes over a
+// slider. A capture-phase controller intercepts the scroll before the Scale's
+// own handler and marks it handled, letting the ScrolledWindow keep scrolling.
+func disableScaleScroll(scale *gtk.Scale) {
+	ec := gtk.NewEventControllerScroll(gtk.EventControllerScrollVertical)
+	ec.SetPropagationPhase(gtk.PhaseCapture)
+	ec.ConnectScroll(func(dx, dy float64) bool { return true })
+	scale.AddController(ec)
+}
+
+// coordsToHSSized maps a point in a colour wheel of the given diameter to
+// (hue, saturation), so the picker overlay and every colourControls wheel
+// share one mapping.
+func coordsToHSSized(x, y, size float64) (h, s float64) {
+	radius := size / 2.0
+	dx := x - radius
+	dy := y - radius
+	dist := math.Sqrt(dx*dx + dy*dy)
+	if dist > radius {
+		dist = radius
+	}
+	h = math.Mod(math.Atan2(dy, dx)/(2*math.Pi), 1.0)
+	if h < 0 {
+		h += 1.0
+	}
+	s = dist / radius
+	return h, s
 }

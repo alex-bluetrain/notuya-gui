@@ -156,12 +156,24 @@ def n_actions(node):
         return 0
 
 
+# Action names GTK exposes for "activate this widget" (buttons, tabs, toggles).
+CLICK_ACTIONS = {"click", "press", "activate", "toggle"}
+
+
+def first_action(node):
+    try:
+        return Atspi.Action.get_action_name(node, 0)
+    except Exception:
+        return None
+
+
 def find(app, name, role=None):
     """Widget matching name (and role, if given).
 
-    Prefers a node that has an action: a button with a tooltip exposes both
-    the button and its tooltip under the same name, and only the button can
-    be clicked.
+    Several nodes can share a name: a button and its tooltip, or the window
+    frame, whose title follows the visible tab and whose first action is
+    window.close. Prefer a node whose first action is a real click; failing
+    that, return the first match so state reads still work.
     """
     fallback = None
     for n in walk(app):
@@ -169,7 +181,7 @@ def find(app, name, role=None):
             continue
         if role is not None and n.get_role_name() != role:
             continue
-        if n_actions(n) > 0:
+        if first_action(n) in CLICK_ACTIONS:
             return n
         fallback = fallback or n
     return fallback

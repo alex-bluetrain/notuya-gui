@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/averstraeten/notuya-go/pkg/bulb"
@@ -90,6 +91,19 @@ func (c *control) withBulb(ctx context.Context, fn func(b *bulb.Bulb) error) err
 		return err
 	}
 	return fn(c.bulb)
+}
+
+// async runs one bounded device command off the GTK thread, so a slow or
+// unreachable bulb never stalls the UI. The UI has already updated
+// optimistically and the next refresh reconciles, so a failure is only logged.
+func (c *control) async(what string, fn func(ctx context.Context) error) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		if err := fn(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "notuya-gui: %s %s: %v\n", c.name(), what, err)
+		}
+	}()
 }
 
 // Close tears down the session. Safe to call more than once.

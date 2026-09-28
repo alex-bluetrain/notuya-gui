@@ -11,15 +11,15 @@ import (
 )
 
 // sceneEditorWheelSize is the diameter of the per-light colour wheel inside the
-// scene editor. Matches the device panel's wheel for a consistent feel.
+// scene editor (smaller than the Lights tab's, since there is one per light).
 const sceneEditorWheelSize = 180
 
 // sceneEditor is the modal dialog that edits a scene's snapshot with live
 // preview: moving a wheel or slider drives the real bulb (via the shared
 // control), and each change is also written into the in-memory SceneState so
-// Guardar persists exactly what was previewed. The preview is destructive —
+// Save persists exactly what was previewed. The preview is destructive —
 // closing the dialog leaves the lights at their last previewed value, matching
-// the picker and the Luces tab.
+// the picker and the Lights tab.
 type sceneEditor struct {
 	app    *desktopApp
 	index  int // -1 = new scene, >=0 = edit existing
@@ -315,20 +315,12 @@ func (r *sceneDeviceRow) applySensitivity() {
 
 func (r *sceneDeviceRow) previewPower(on bool) {
 	ctl := r.ctl
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-		defer cancel()
-		_ = ctl.SetPower(ctx, on)
-	}()
+	ctl.async("power", func(ctx context.Context) error { return ctl.SetPower(ctx, on) })
 }
 
 func (r *sceneDeviceRow) previewColour() {
 	ctl, rgb := r.ctl, r.cc.SelRGB()
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-		defer cancel()
-		_ = ctl.SetColour(ctx, rgb)
-	}()
+	ctl.async("colour", func(ctx context.Context) error { return ctl.SetColour(ctx, rgb) })
 }
 
 func (r *sceneDeviceRow) previewBrightness(v float64) {
@@ -338,27 +330,15 @@ func (r *sceneDeviceRow) previewBrightness(v float64) {
 	// dedicated brightness DP.
 	if r.st.Mode == device.ModeColour {
 		rr, gg, bb := hsvToRGBInt(r.st.Hue, r.st.Sat, v/100.0)
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-			defer cancel()
-			_ = ctl.SetColour(ctx, device.RGB{R: rr, G: gg, B: bb})
-		}()
+		ctl.async("colour", func(ctx context.Context) error { return ctl.SetColour(ctx, device.RGB{R: rr, G: gg, B: bb}) })
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-		defer cancel()
-		_ = ctl.SetWhiteBrightness(ctx, v)
-	}()
+	ctl.async("brightness", func(ctx context.Context) error { return ctl.SetWhiteBrightness(ctx, v) })
 }
 
 func (r *sceneDeviceRow) previewTemp(v float64) {
 	ctl := r.ctl
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-		defer cancel()
-		_ = ctl.SetColourTempPercent(ctx, v)
-	}()
+	ctl.async("temperature", func(ctx context.Context) error { return ctl.SetColourTempPercent(ctx, v) })
 }
 
 // syncHS mirrors the shared widget's wheel selection into the in-memory
@@ -366,60 +346,6 @@ func (r *sceneDeviceRow) previewTemp(v float64) {
 func (r *sceneDeviceRow) syncHS() {
 	r.st.Hue = r.cc.hue
 	r.st.Sat = r.cc.sat
-}
-
-// newModeToggle builds an AdwToggleGroup with two icon+label toggles —
-// "colour" (colour wheel) and "white" (colour temperature) — for the
-// Colour/White mode selector shared by the scene editor and the Lights
-// playground. onChange fires with isWhite = true when White becomes active.
-// The returned group's active toggle is set programmatically with
-// SetActiveName("colour"|"white"); guard onChange against those with a
-// suppress flag in the caller.
-func newModeToggle(onChange func(isWhite bool)) *adw.ToggleGroup {
-	group := adw.NewToggleGroup()
-	group.SetHExpand(true)
-
-	colour := adw.NewToggle()
-	colour.SetName("colour")
-	colour.SetLabel("Colour")
-	colour.SetIconName("color-select-symbolic")
-	group.Add(colour)
-
-	white := adw.NewToggle()
-	white.SetName("white")
-	white.SetLabel("White")
-	white.SetIconName("weather-clear-symbolic")
-	group.Add(white)
-
-	group.NotifyProperty("active-name", func() {
-		onChange(group.ActiveName() == "white")
-	})
-	return group
-}
-
-// newTransitionToggle builds an AdwToggleGroup with two icon+label toggles —
-// "jump" (instant snap) and "fade" (gradual) — for DP 28's change mode. onChange
-// fires with isFade = true when Fade becomes active. Set the active toggle
-// programmatically with SetActiveName("jump"|"fade"); guard onChange with a
-// suppress flag in the caller.
-func newTransitionToggle(onChange func(isFade bool)) *adw.ToggleGroup {
-	group := adw.NewToggleGroup()
-	group.SetHExpand(true)
-
-	jump := adw.NewToggle()
-	jump.SetName("jump")
-	jump.SetLabel("Instant")
-	group.Add(jump)
-
-	fade := adw.NewToggle()
-	fade.SetName("fade")
-	fade.SetLabel("Smooth")
-	group.Add(fade)
-
-	group.NotifyProperty("active-name", func() {
-		onChange(group.ActiveName() == "fade")
-	})
-	return group
 }
 
 // save builds the scene from the included rows, writes it into a.cfg.Scenes

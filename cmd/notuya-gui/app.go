@@ -14,10 +14,14 @@ import (
 	"github.com/diamondburned/gotk4/pkg/pango"
 )
 
-// desktopApp is the default entry point: an ordinary GTK4 toplevel (an
-// xdg-toplevel, not a layer-shell overlay) offering per-device light control,
-// grouped by room. It owns one control (persistent session) per device for the
-// window's lifetime and closes them all on exit.
+// roomsTabEnabled gates the Rooms tab, which is parked until it is finished.
+// Its code stays compiled (not commented out) so it cannot silently rot.
+const roomsTabEnabled = false
+
+// desktopApp is the default entry point: an ordinary libadwaita toplevel (an
+// xdg-toplevel, not a layer-shell overlay) with Scenes, Lights and Settings
+// tabs. It owns one control (persistent session) per device for the window's
+// lifetime and closes them all on exit.
 type desktopApp struct {
 	app          *adw.Application
 	window       *adw.ApplicationWindow
@@ -25,8 +29,8 @@ type desktopApp struct {
 	cfg          *Config
 	wheelSurface *cairo.Surface
 
-	controls []*control // one per device, parallel to cfg.Devices
-	panels   []*devicePanel
+	controls []*control     // one per device, parallel to cfg.Devices
+	panels   []*devicePanel // Rooms tab only; empty while it is disabled
 
 	// byID resolves device_id → control, so the scenes tab can apply a scene
 	// without re-deriving the mapping.
@@ -86,29 +90,25 @@ func (a *desktopApp) activate() {
 
 	a.byID = make(map[string]*control, len(a.cfg.Devices))
 
-	// Build one control per device, keyed by device_id so the Rooms tab and
-	// the Lights playground share the same session per bulb.
-	panelByID := make(map[string]*devicePanel, len(a.cfg.Devices))
+	// Build one control per device, keyed by device_id so every tab shares
+	// the same session per bulb.
 	for i := range a.cfg.Devices {
 		ctl := newControl(a.cfg.Devices[i])
-		panel := newDevicePanel(ctl)
 		a.controls = append(a.controls, ctl)
-		a.panels = append(a.panels, panel)
-		panelByID[a.cfg.Devices[i].DeviceID] = panel
 		a.byID[a.cfg.Devices[i].DeviceID] = ctl
 	}
 
-	// A ViewStack holds the three views; a ViewSwitcher in the header bar
-	// selects between them (the Adwaita replacement for a Notebook's tabs).
+	// A ViewStack holds the views; a ViewSwitcher in the header bar selects
+	// between them (the Adwaita replacement for a Notebook's tabs).
 	stack := adw.NewViewStack()
 	stack.SetVExpand(true)
 	stack.AddTitledWithIcon(a.buildScenesTab(), "scenes", "Scenes", "starred-symbolic")
 	stack.AddTitledWithIcon(a.buildLightsTab(), "lights", "Lights", "weather-clear-symbolic")
-	// Rooms tab disabled until fully implemented; keep the code and re-enable here.
-	// stack.AddTitledWithIcon(a.buildRoomsTab(panelByID), "rooms", "Rooms", "user-home-symbolic")
-	_ = panelByID
+	if roomsTabEnabled {
+		stack.AddTitledWithIcon(a.buildRoomsTab(), "rooms", "Rooms", "user-home-symbolic")
+	}
 	stack.AddTitledWithIcon(a.buildSettingsTab(), "settings", "Settings", "emblem-system-symbolic")
-	stack.SetVisibleChildName("lights")
+	stack.SetVisibleChildName("scenes")
 
 	switcher := adw.NewViewSwitcher()
 	switcher.SetPolicy(adw.ViewSwitcherPolicyWide)
@@ -135,7 +135,7 @@ func (a *desktopApp) activate() {
 
 	window.Present()
 
-	// Populate every panel with live device state.
+	// Populate the Rooms tab's panels (if any) with live device state.
 	for _, panel := range a.panels {
 		panel.refresh()
 	}
@@ -143,9 +143,16 @@ func (a *desktopApp) activate() {
 
 // buildRoomsTab builds a mobile-style overview: one row per room with an icon,
 // the room name, a live "N of M lights on" summary, and a master switch that
-// powers the whole room on or off. It reuses the same controls as the Lights
-// tab (looked up by device_id) so no extra sessions are opened.
-func (a *desktopApp) buildRoomsTab(byID map[string]*devicePanel) *gtk.ScrolledWindow {
+// powers the whole room on or off. Its panels wrap the shared controls, so no
+// extra sessions are opened.
+func (a *desktopApp) buildRoomsTab() *gtk.ScrolledWindow {
+	byID := make(map[string]*devicePanel, len(a.controls))
+	for _, ctl := range a.controls {
+		panel := newDevicePanel(ctl)
+		a.panels = append(a.panels, panel)
+		byID[ctl.dev.DeviceID] = panel
+	}
+
 	group := adw.NewPreferencesGroup()
 	group.SetTitle("My rooms")
 
@@ -450,7 +457,7 @@ func (rr *roomRow) updateSummary() {
 }
 
 // buildSettingsTab embeds the settings UI as a tab. It seeds a settings
-// instance from a.cfg and routes its Guardar back through a.cfg so the scenes
+// instance from a.cfg and routes its Save back through a.cfg so the scenes
 // tab and settings tab never clobber each other's slice of the config.
 func (a *desktopApp) buildSettingsTab() gtk.Widgetter {
 	s := &settings{
@@ -474,13 +481,9 @@ func (a *desktopApp) buildSettingsTab() gtk.Widgetter {
 
 // groupPower toggles every member panel's device off the GTK thread.
 func (a *desktopApp) groupPower(members []*devicePanel, on bool) {
-	for _, panel := range members {
-		p := panel
-		go func() {
-			if err := p.ctl.SetPower(context.Background(), on); err != nil {
-				fmt.Fprintf(os.Stderr, "notuya-gui: %s -> %v\n", p.ctl.name(), err)
-			}
-		}()
+	for _, p := range members {
+		ctl := p.ctl
+		ctl.async("power", func(ctx context.Context) error { return ctl.SetPower(ctx, on) })
 	}
 }
 

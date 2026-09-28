@@ -12,21 +12,19 @@ import (
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
-// playgroundWheelSize is the diameter of the shared colour wheel in the Lights
-// playground.
-const playgroundWheelSize = 240
+// lightsWheelSize is the diameter of the shared colour wheel on the Lights tab.
+const lightsWheelSize = 240
 
-// playground is the Lights tab: a manual "playground" with a checkbox list of
-// devices and a single set of controls (colour wheel, mode, brightness, temp)
-// whose changes are broadcast to every checked light. It reuses the same
-// control instances as the Rooms tab (via a.byID, mutex-serialized), driving
-// the wheel through BeginLiveDrag/UpdateLiveDrag/EndLiveDrag and the sliders/
-// mode/power through the discrete setters — exactly like the scene editor, so
-// colour and white/temperature behave correctly.
-type playground struct {
+// lightsTab is the Lights tab: a checkbox list of devices above one set of
+// shared controls (colourControls + transition) whose changes are broadcast to
+// every checked light. It drives the app's per-device control instances
+// (mutex-serialized, shared with the scene editor): the wheel streams through
+// BeginLiveDrag/UpdateLiveDrag/EndLiveDrag, sliders/mode/power go through the
+// discrete setters.
+type lightsTab struct {
 	app *desktopApp
 
-	targets []*playgroundTarget
+	targets []*lightTarget
 
 	cc    *colourControls
 	trans *adw.ToggleGroup
@@ -42,11 +40,11 @@ type playground struct {
 	suppress bool
 }
 
-// playgroundTarget is one device's row in the target list. The checkbox selects
+// lightTarget is one device's row in the target list. The checkbox selects
 // whether the shared wheel/sliders drive this light; the swatch, brightness
 // readout, and per-light power switch reflect and control this light's own live
 // state (seeded from a Refresh on open), independent of the shared controls.
-type playgroundTarget struct {
+type lightTarget struct {
 	ctl    *control
 	check  *gtk.CheckButton
 	swatch *gtk.DrawingArea
@@ -66,10 +64,9 @@ type playgroundTarget struct {
 	suppress bool
 }
 
-// buildLightsTab builds the playground: a target list on top, shared controls
-// below. It returns the scrolled widget for the "Lights" tab.
+// buildLightsTab builds the target list on top and the shared controls below. It returns the scrolled widget for the "Lights" tab.
 func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
-	pg := &playground{app: a, mode: device.ModeColour, suppress: true}
+	lt := &lightsTab{app: a, mode: device.ModeColour, suppress: true}
 
 	body := gtk.NewBox(gtk.OrientationVertical, 12)
 	body.SetMarginTop(18)
@@ -89,7 +86,7 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 		if name == "" {
 			name = dev.DeviceID
 		}
-		t := &playgroundTarget{ctl: a.byID[dev.DeviceID]}
+		t := &lightTarget{ctl: a.byID[dev.DeviceID]}
 
 		row := adw.NewActionRow()
 		row.SetTitle(name)
@@ -131,7 +128,7 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 		row.AddSuffix(t.power)
 
 		targets.Add(row)
-		pg.targets = append(pg.targets, t)
+		lt.targets = append(lt.targets, t)
 	}
 	body.Append(targets)
 
@@ -156,7 +153,7 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	powerSwitch := gtk.NewSwitch()
 	powerSwitch.SetVAlign(gtk.AlignCenter)
 	powerSwitch.ConnectStateSet(func(state bool) bool {
-		pg.setPower(state)
+		lt.setPower(state)
 		return false
 	})
 	powerRow.Append(powerSwitch)
@@ -164,109 +161,109 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 
 	// Shared colour-selection controls (mode toggle, wheel, temperature,
 	// brightness) — the same widget set the scene editor uses.
-	pg.cc = newColourControls(a.wheelSurface, playgroundWheelSize, colourCallbacks{
+	lt.cc = newColourControls(a.wheelSurface, lightsWheelSize, colourCallbacks{
 		OnMode: func(bool) {
-			if pg.suppress {
+			if lt.suppress {
 				return
 			}
-			pg.onModeChanged()
+			lt.onModeChanged()
 		},
 		// Wheel drag → live preview on every checked light.
 		OnDragBegin: func(rgb device.RGB) {
-			tt := transitionValue(pg.trans.ActiveName() == "fade")
-			for _, t := range pg.checked() {
+			tt := transitionValue(lt.trans.ActiveName() == "fade")
+			for _, t := range lt.checked() {
 				t.ctl.BeginLiveDrag(rgb, tt)
 			}
 		},
 		OnDragUpdate: func(rgb device.RGB) {
-			for _, t := range pg.checked() {
+			for _, t := range lt.checked() {
 				t.ctl.UpdateLiveDrag(rgb)
 			}
-			pg.mirrorColour()
+			lt.mirrorColour()
 		},
 		OnDragEnd: func(rgb device.RGB) {
-			for _, t := range pg.checked() {
+			for _, t := range lt.checked() {
 				t.ctl.UpdateLiveDrag(rgb)
 				ctl := t.ctl
 				go ctl.EndLiveDrag()
 			}
-			pg.mirrorColour()
+			lt.mirrorColour()
 		},
 		OnBright: func(v float64) {
-			if pg.suppress {
+			if lt.suppress {
 				return
 			}
-			pg.setBrightness(v)
+			lt.setBrightness(v)
 		},
 		OnTemp: func(v float64) {
-			if pg.suppress {
+			if lt.suppress {
 				return
 			}
-			pg.setTemp(v)
+			lt.setTemp(v)
 		},
 	})
-	pg.cc.AppendTo(inner)
+	lt.cc.AppendTo(inner)
 
 	// Bracket brightness drags with a live music stream so the change fades
 	// (DP 28) in colour mode when Fade is on, matching the wheel. Outside a
 	// drag setBrightness falls back to a discrete write.
 	brightDrag := gtk.NewGestureDrag()
 	brightDrag.ConnectDragBegin(func(_, _ float64) {
-		if pg.mode != device.ModeColour {
+		if lt.mode != device.ModeColour {
 			return
 		}
-		v := pg.cc.Bright.Value()
-		r, g, b := hsvToRGBInt(pg.cc.hue, pg.cc.sat, v/100.0)
+		v := lt.cc.Bright.Value()
+		r, g, b := hsvToRGBInt(lt.cc.hue, lt.cc.sat, v/100.0)
 		rgb := device.RGB{R: r, G: g, B: b}
-		tt := transitionValue(pg.trans.ActiveName() == "fade")
-		for _, t := range pg.checked() {
+		tt := transitionValue(lt.trans.ActiveName() == "fade")
+		for _, t := range lt.checked() {
 			t.ctl.BeginLiveDrag(rgb, tt)
 		}
-		pg.brightDragging = true
+		lt.brightDragging = true
 	})
 	brightDrag.ConnectDragEnd(func(_, _ float64) {
-		if !pg.brightDragging {
+		if !lt.brightDragging {
 			return
 		}
-		pg.brightDragging = false
-		for _, t := range pg.checked() {
+		lt.brightDragging = false
+		for _, t := range lt.checked() {
 			ctl := t.ctl
 			go ctl.EndLiveDrag()
 		}
 	})
-	pg.cc.Bright.AddController(brightDrag)
+	lt.cc.Bright.AddController(brightDrag)
 
 	// Transition toggle: DP 28's change mode is boolean (0 = direct/jump,
 	// 1 = gradual/fade), so this is a two-way toggle, not a range. Jump snaps
 	// to each colour instantly (steppy); Fade smears one colour into the next.
 	// Takes effect live mid-drag.
-	pg.trans = newTransitionToggle(func(isFade bool) {
-		if pg.suppress {
+	lt.trans = newTransitionToggle(func(isFade bool) {
+		if lt.suppress {
 			return
 		}
-		for _, t := range pg.checked() {
+		for _, t := range lt.checked() {
 			t.ctl.SetLiveTransition(transitionValue(isFade))
 		}
 	})
-	inner.Append(pg.trans)
+	inner.Append(lt.trans)
 	if device.DefaultTransition != 0 {
-		pg.trans.SetActiveName("fade")
+		lt.trans.SetActiveName("fade")
 	} else {
-		pg.trans.SetActiveName("jump")
+		lt.trans.SetActiveName("jump")
 	}
 
 	body.Append(controls)
 
-	// The initial SetValue above fires ConnectValueChanged; the suppress flag
-	// keeps those programmatic assignments from broadcasting to the bulbs when
-	// the tab is built (otherwise opening the app pushes white at full
-	// brightness to every checked light).
-	pg.suppress = false
+	// Seeding the controls' initial values fires their change handlers; the
+	// suppress flag keeps those programmatic assignments from broadcasting to
+	// the bulbs (otherwise opening the app pushes white at full brightness to
+	// every checked light).
+	lt.suppress = false
 
-	pg.cc.ApplyModeVisibility()
+	lt.cc.ApplyModeVisibility()
 
 	// Seed each target row from its device's live state (off-thread).
-	pg.refreshTargets()
+	lt.refreshTargets()
 
 	clamp := adw.NewClamp()
 	clamp.SetMaximumSize(600)
@@ -279,9 +276,9 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 }
 
 // checked returns the currently selected targets.
-func (pg *playground) checked() []*playgroundTarget {
-	var out []*playgroundTarget
-	for _, t := range pg.targets {
+func (lt *lightsTab) checked() []*lightTarget {
+	var out []*lightTarget
+	for _, t := range lt.targets {
 		if t.ctl != nil && t.check.Active() {
 			out = append(out, t)
 		}
@@ -291,21 +288,21 @@ func (pg *playground) checked() []*playgroundTarget {
 
 // onModeChanged flips the shared mode and pushes the newly selected mode to
 // every checked light (visibility is handled by the colourControls).
-func (pg *playground) onModeChanged() {
-	if pg.cc.IsWhite() {
-		pg.mode = device.ModeWhite
+func (lt *lightsTab) onModeChanged() {
+	if lt.cc.IsWhite() {
+		lt.mode = device.ModeWhite
 	} else {
-		pg.mode = device.ModeColour
+		lt.mode = device.ModeColour
 	}
-	if pg.mode == device.ModeWhite {
-		pg.setTemp(pg.cc.Temp.Value())
+	if lt.mode == device.ModeWhite {
+		lt.setTemp(lt.cc.Temp.Value())
 	} else {
-		pg.setColour()
+		lt.setColour()
 	}
 }
 
-// transitionValue maps the Fade switch to DP 28's change-mode flag:
-// off = 0 (direct/jump), on = 1 (gradual/fade).
+// transitionValue maps the Instant|Smooth toggle to DP 28's change-mode flag:
+// 0 = direct (Instant), 1 = gradual (Smooth).
 func transitionValue(fade bool) int {
 	if fade {
 		return 1
@@ -319,8 +316,8 @@ func transitionValue(fade bool) int {
 // it, so the target list follows what was just broadcast without querying any
 // device. Rows that never got a first refresh (device unreachable) are left
 // alone rather than shown a state they may not have taken.
-func (pg *playground) mirrorChecked(fn func(*SceneState)) {
-	for _, t := range pg.checked() {
+func (lt *lightsTab) mirrorChecked(fn func(*SceneState)) {
+	for _, t := range lt.checked() {
 		if !t.hasState {
 			continue
 		}
@@ -331,9 +328,9 @@ func (pg *playground) mirrorChecked(fn func(*SceneState)) {
 
 // mirrorColour mirrors the shared colour selection (hue/sat/brightness) into
 // the checked rows.
-func (pg *playground) mirrorColour() {
-	hue, sat, bright := pg.cc.hue, pg.cc.sat, pg.cc.Bright.Value()
-	pg.mirrorChecked(func(s *SceneState) {
+func (lt *lightsTab) mirrorColour() {
+	hue, sat, bright := lt.cc.hue, lt.cc.sat, lt.cc.Bright.Value()
+	lt.mirrorChecked(func(s *SceneState) {
 		s.Mode = device.ModeColour
 		s.Hue = hue
 		s.Sat = sat
@@ -341,86 +338,63 @@ func (pg *playground) mirrorColour() {
 	})
 }
 
-func (pg *playground) setPower(on bool) {
-	for _, t := range pg.checked() {
+func (lt *lightsTab) setPower(on bool) {
+	for _, t := range lt.checked() {
 		ctl := t.ctl
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-			defer cancel()
-			_ = ctl.SetPower(ctx, on)
-		}()
+		ctl.async("power", func(ctx context.Context) error { return ctl.SetPower(ctx, on) })
 	}
-	pg.mirrorChecked(func(s *SceneState) { s.On = on })
+	lt.mirrorChecked(func(s *SceneState) { s.On = on })
 }
 
-func (pg *playground) setColour() {
-	rgb := pg.cc.SelRGB()
-	for _, t := range pg.checked() {
+func (lt *lightsTab) setColour() {
+	rgb := lt.cc.SelRGB()
+	for _, t := range lt.checked() {
 		ctl := t.ctl
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-			defer cancel()
-			_ = ctl.SetColour(ctx, rgb)
-		}()
+		ctl.async("colour", func(ctx context.Context) error { return ctl.SetColour(ctx, rgb) })
 	}
-	pg.mirrorColour()
+	lt.mirrorColour()
 }
 
-func (pg *playground) setBrightness(v float64) {
-	// In colour mode brightness is the colour's "v": rewrite the current
-	// selection with the new value in one write. In white mode it is the
-	// dedicated brightness DP.
-	if pg.mode == device.ModeColour {
-		r, g, b := hsvToRGBInt(pg.cc.hue, pg.cc.sat, v/100.0)
+func (lt *lightsTab) setBrightness(v float64) {
+	// In colour mode brightness is the colour's "v", so rewrite the current
+	// selection. While the slider is dragged a live music stream is open (see
+	// brightDrag in buildLightsTab), so the change honours Smooth — DP 28
+	// carries the fade bit, a discrete SetColour cannot. Outside a drag
+	// (keyboard, click) a discrete write is correct and cheaper. In white mode
+	// brightness is its own DP.
+	if lt.mode == device.ModeColour {
+		r, g, b := hsvToRGBInt(lt.cc.hue, lt.cc.sat, v/100.0)
 		rgb := device.RGB{R: r, G: g, B: b}
-		// Brightness in colour mode is a "v" rewrite of the current colour.
-		// While the slider is being dragged we hold a live music stream open
-		// (see the drag gesture on pg.bright), so the change fades when Fade
-		// is on — DP 28 carries the fade bit, a discrete SetColour cannot.
-		// Outside a drag (keyboard, click-to-value) fall back to a discrete
-		// write, which is correct for jump and cheaper.
-		if pg.brightDragging {
-			for _, t := range pg.checked() {
+		if lt.brightDragging {
+			for _, t := range lt.checked() {
 				t.ctl.UpdateLiveDrag(rgb)
 			}
-			pg.mirrorColour()
+			lt.mirrorColour()
 			return
 		}
-		for _, t := range pg.checked() {
+		for _, t := range lt.checked() {
 			ctl := t.ctl
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-				defer cancel()
-				_ = ctl.SetColour(ctx, rgb)
-			}()
+			ctl.async("colour", func(ctx context.Context) error { return ctl.SetColour(ctx, rgb) })
 		}
-		pg.mirrorColour()
+		lt.mirrorColour()
 		return
 	}
-	for _, t := range pg.checked() {
+	for _, t := range lt.checked() {
 		ctl := t.ctl
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-			defer cancel()
-			_ = ctl.SetWhiteBrightness(ctx, v)
-		}()
+		ctl.async("brightness", func(ctx context.Context) error { return ctl.SetWhiteBrightness(ctx, v) })
 	}
-	pg.mirrorChecked(func(s *SceneState) {
+	lt.mirrorChecked(func(s *SceneState) {
 		s.Mode = device.ModeWhite
 		s.Bright = v
 	})
 }
 
-func (pg *playground) setTemp(v float64) {
-	for _, t := range pg.checked() {
+func (lt *lightsTab) setTemp(v float64) {
+	for _, t := range lt.checked() {
 		ctl := t.ctl
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-			defer cancel()
-			_ = ctl.SetColourTempPercent(ctx, v)
-		}()
+		ctl.async("temperature", func(ctx context.Context) error { return ctl.SetColourTempPercent(ctx, v) })
 	}
-	pg.mirrorChecked(func(s *SceneState) {
+	lt.mirrorChecked(func(s *SceneState) {
 		s.Mode = device.ModeWhite
 		s.Temp = v
 	})
@@ -431,8 +405,8 @@ func (pg *playground) setTemp(v float64) {
 // refreshTargets queries every target's device once (off the GTK thread) and
 // paints its row from the result. Each target has its own control/session, so
 // the queries run in parallel; results are marshalled back with IdleAdd.
-func (pg *playground) refreshTargets() {
-	for _, t := range pg.targets {
+func (lt *lightsTab) refreshTargets() {
+	for _, t := range lt.targets {
 		if t.ctl == nil {
 			continue
 		}
@@ -452,14 +426,14 @@ func (pg *playground) refreshTargets() {
 
 // applyStatus paints one row from a fresh device status: the on/off switch, the
 // brightness readout, and the colour swatch. Runs on the GTK thread.
-func (t *playgroundTarget) applyStatus(st deviceStatus) {
+func (t *lightTarget) applyStatus(st deviceStatus) {
 	t.state = stateFromStatus(t.ctl.dev.DeviceID, st)
 	t.hasState = true
 	t.repaint()
 }
 
 // repaint redraws the row's widgets from t.state. Runs on the GTK thread.
-func (t *playgroundTarget) repaint() {
+func (t *lightTarget) repaint() {
 	// Seed the power switch without firing its command handler.
 	t.suppress = true
 	t.power.SetActive(t.state.On)
@@ -478,16 +452,12 @@ func (t *playgroundTarget) repaint() {
 
 // setPower turns just this light on or off (off the GTK thread), independent
 // of the shared Power switch, and optimistically repaints the row.
-func (t *playgroundTarget) setPower(on bool) {
+func (t *lightTarget) setPower(on bool) {
 	ctl := t.ctl
 	if ctl == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-		defer cancel()
-		_ = ctl.SetPower(ctx, on)
-	}()
+	ctl.async("power", func(ctx context.Context) error { return ctl.SetPower(ctx, on) })
 	if t.hasState {
 		t.state.On = on
 		t.repaint()
@@ -496,7 +466,7 @@ func (t *playgroundTarget) setPower(on bool) {
 
 // drawSwatch paints this light's current colour as a small rounded square, or a
 // muted placeholder before the first refresh lands.
-func (t *playgroundTarget) drawSwatch(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
+func (t *lightTarget) drawSwatch(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
 	w, h := float64(width), float64(height)
 	roundedRect(cr, 0, 0, w, h, 5)
 	if !t.hasState {

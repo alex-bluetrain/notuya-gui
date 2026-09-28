@@ -138,10 +138,15 @@ func parseStatus(dps map[string]json.RawMessage) deviceStatus {
 		st.TempPct = pct
 		st.HasTemp = true
 	}
-	if h, s, _, err := device.ColourHSVFrom(dps); err == nil {
+	if h, s, v, err := device.ColourHSVFrom(dps); err == nil {
 		st.Hue = h
 		st.Sat = s
 		st.HasColour = true
+		// In colour mode brightness is DP 24's V component, not the white-mode
+		// brightness DP (which goes stale when the bulb leaves white mode).
+		if st.Mode == device.ModeColour {
+			st.BrightPct = v * 100
+		}
 	}
 	return st
 }

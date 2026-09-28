@@ -102,10 +102,12 @@ type playgroundTarget struct {
 	bright *gtk.Label
 	power  *gtk.Switch
 
-	// col is the last known colour for this light's swatch; hasState is false
-	// until the first refresh lands so the swatch can read as "unknown".
+	// state is the last known state for this light (seeded from a refresh,
+	// then kept current optimistically as broadcasts go out); col is the
+	// swatch colour derived from it. hasState is false until the first
+	// refresh lands so the swatch can read as "unknown".
+	state    SceneState
 	col      device.RGB
-	on       bool
 	hasState bool
 
 	// suppress guards the power switch's handler while it is being set
@@ -253,6 +255,7 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 		for _, t := range pg.checked() {
 			t.ctl.UpdateLiveDrag(rgb)
 		}
+		pg.mirrorColour()
 	})
 	drag.ConnectDragEnd(func(ox, oy float64) {
 		pg.setSelection(startX+ox, startY+oy)
@@ -262,6 +265,7 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 			ctl := t.ctl
 			go ctl.EndLiveDrag()
 		}
+		pg.mirrorColour()
 	})
 	pg.wheel.AddController(drag)
 
@@ -442,6 +446,32 @@ func transitionValue(fade bool) int {
 
 // --- broadcast helpers (all off the GTK thread via the controls) ---
 
+// mirrorChecked applies fn to every checked row's cached state and repaints
+// it, so the target list follows what was just broadcast without querying any
+// device. Rows that never got a first refresh (device unreachable) are left
+// alone rather than shown a state they may not have taken.
+func (pg *playground) mirrorChecked(fn func(*SceneState)) {
+	for _, t := range pg.checked() {
+		if !t.hasState {
+			continue
+		}
+		fn(&t.state)
+		t.repaint()
+	}
+}
+
+// mirrorColour mirrors the shared colour selection (hue/sat/brightness) into
+// the checked rows.
+func (pg *playground) mirrorColour() {
+	hue, sat, bright := pg.hue, pg.sat, pg.bright.Value()
+	pg.mirrorChecked(func(s *SceneState) {
+		s.Mode = device.ModeColour
+		s.Hue = hue
+		s.Sat = sat
+		s.Bright = bright
+	})
+}
+
 func (pg *playground) setPower(on bool) {
 	for _, t := range pg.checked() {
 		ctl := t.ctl
@@ -451,6 +481,7 @@ func (pg *playground) setPower(on bool) {
 			_ = ctl.SetPower(ctx, on)
 		}()
 	}
+	pg.mirrorChecked(func(s *SceneState) { s.On = on })
 }
 
 func (pg *playground) setColour() {
@@ -463,6 +494,7 @@ func (pg *playground) setColour() {
 			_ = ctl.SetColour(ctx, rgb)
 		}()
 	}
+	pg.mirrorColour()
 }
 
 func (pg *playground) setBrightness(v float64) {
@@ -482,6 +514,7 @@ func (pg *playground) setBrightness(v float64) {
 			for _, t := range pg.checked() {
 				t.ctl.UpdateLiveDrag(rgb)
 			}
+			pg.mirrorColour()
 			return
 		}
 		for _, t := range pg.checked() {
@@ -492,6 +525,7 @@ func (pg *playground) setBrightness(v float64) {
 				_ = ctl.SetColour(ctx, rgb)
 			}()
 		}
+		pg.mirrorColour()
 		return
 	}
 	for _, t := range pg.checked() {
@@ -502,6 +536,10 @@ func (pg *playground) setBrightness(v float64) {
 			_ = ctl.SetWhiteBrightness(ctx, v)
 		}()
 	}
+	pg.mirrorChecked(func(s *SceneState) {
+		s.Mode = device.ModeWhite
+		s.Bright = v
+	})
 }
 
 func (pg *playground) setTemp(v float64) {
@@ -513,6 +551,10 @@ func (pg *playground) setTemp(v float64) {
 			_ = ctl.SetColourTempPercent(ctx, v)
 		}()
 	}
+	pg.mirrorChecked(func(s *SceneState) {
+		s.Mode = device.ModeWhite
+		s.Temp = v
+	})
 }
 
 // setSelection updates the shared hue/sat from wheel coordinates and redraws.
@@ -555,28 +597,31 @@ func (pg *playground) refreshTargets() {
 // applyStatus paints one row from a fresh device status: the on/off switch, the
 // brightness readout, and the colour swatch. Runs on the GTK thread.
 func (t *playgroundTarget) applyStatus(st deviceStatus) {
+	t.state = stateFromStatus(t.ctl.dev.DeviceID, st)
 	t.hasState = true
-	t.on = st.On
+	t.repaint()
+}
 
+// repaint redraws the row's widgets from t.state. Runs on the GTK thread.
+func (t *playgroundTarget) repaint() {
 	// Seed the power switch without firing its command handler.
 	t.suppress = true
-	t.power.SetActive(st.On)
+	t.power.SetActive(t.state.On)
 	t.suppress = false
 
-	if st.On {
-		t.bright.SetText(fmt.Sprintf("%d%%", int(st.BrightPct+0.5)))
+	if t.state.On {
+		t.bright.SetText(fmt.Sprintf("%d%%", int(t.state.Bright+0.5)))
 	} else {
 		t.bright.SetText("off")
 	}
 
-	r, g, b := sceneStateColour(stateFromStatus(t.ctl.dev.DeviceID, st))
+	r, g, b := sceneStateColour(t.state)
 	t.col = device.RGB{R: r, G: g, B: b}
 	t.swatch.QueueDraw()
 }
 
-// setPower turns just this light on or off (off the GTK thread), independent of
-// the shared Power switch. The optimistic swatch/label update lands on the next
-// refresh; here we only issue the command.
+// setPower turns just this light on or off (off the GTK thread), independent
+// of the shared Power switch, and optimistically repaints the row.
 func (t *playgroundTarget) setPower(on bool) {
 	ctl := t.ctl
 	if ctl == nil {
@@ -587,6 +632,10 @@ func (t *playgroundTarget) setPower(on bool) {
 		defer cancel()
 		_ = ctl.SetPower(ctx, on)
 	}()
+	if t.hasState {
+		t.state.On = on
+		t.repaint()
+	}
 }
 
 // drawSwatch paints this light's current colour as a small rounded square, or a

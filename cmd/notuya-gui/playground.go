@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 
 	"github.com/averstraeten/notuya-go/pkg/device"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/cairo"
+	coreglib "github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
@@ -51,10 +53,26 @@ type playground struct {
 	suppress bool
 }
 
-// playgroundTarget pairs a device's checkbox with its control.
+// playgroundTarget is one device's row in the target list. The checkbox selects
+// whether the shared wheel/sliders drive this light; the swatch, brightness
+// readout, and per-light power switch reflect and control this light's own live
+// state (seeded from a Refresh on open), independent of the shared controls.
 type playgroundTarget struct {
-	ctl   *control
-	check *gtk.CheckButton
+	ctl    *control
+	check  *gtk.CheckButton
+	swatch *gtk.DrawingArea
+	bright *gtk.Label
+	power  *gtk.Switch
+
+	// col is the last known colour for this light's swatch; hasState is false
+	// until the first refresh lands so the swatch can read as "unknown".
+	col      device.RGB
+	on       bool
+	hasState bool
+
+	// suppress guards the power switch's handler while it is being set
+	// programmatically from a refresh, so seeding state does not fire a command.
+	suppress bool
 }
 
 // buildLightsTab builds the playground: a target list on top, shared controls
@@ -68,7 +86,9 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	body.SetMarginStart(12)
 	body.SetMarginEnd(12)
 
-	// Target list: one checkbox per device (checked = receives changes).
+	// Target list: one row per device. The checkbox selects who the shared
+	// controls drive; the swatch/brightness/switch show and control each
+	// light's own live state.
 	targets := adw.NewPreferencesGroup()
 	targets.SetTitle("Lights")
 	targets.SetDescription("Selected lights receive the colour below")
@@ -78,15 +98,49 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 		if name == "" {
 			name = dev.DeviceID
 		}
+		t := &playgroundTarget{ctl: a.byID[dev.DeviceID]}
+
 		row := adw.NewActionRow()
 		row.SetTitle(name)
+
 		check := gtk.NewCheckButton()
 		check.SetActive(true)
 		check.SetVAlign(gtk.AlignCenter)
+		check.SetTooltipText("Send the shared colour to this light")
 		row.AddPrefix(check)
 		row.SetActivatableWidget(check)
+		t.check = check
+
+		// Live colour swatch for this light.
+		t.swatch = gtk.NewDrawingArea()
+		t.swatch.SetContentWidth(20)
+		t.swatch.SetContentHeight(20)
+		t.swatch.SetVAlign(gtk.AlignCenter)
+		t.swatch.SetDrawFunc(t.drawSwatch)
+		row.AddSuffix(t.swatch)
+
+		// Brightness readout for this light ("—" until first refresh).
+		t.bright = gtk.NewLabel("—")
+		t.bright.SetWidthChars(4)
+		t.bright.SetXAlign(1.0)
+		t.bright.SetVAlign(gtk.AlignCenter)
+		t.bright.AddCSSClass("dim-label")
+		row.AddSuffix(t.bright)
+
+		// Per-light power switch (independent of the shared Power switch).
+		t.power = gtk.NewSwitch()
+		t.power.SetVAlign(gtk.AlignCenter)
+		t.power.ConnectStateSet(func(state bool) bool {
+			if t.suppress {
+				return false
+			}
+			t.setPower(state)
+			return false
+		})
+		row.AddSuffix(t.power)
+
 		targets.Add(row)
-		pg.targets = append(pg.targets, &playgroundTarget{ctl: a.byID[dev.DeviceID], check: check})
+		pg.targets = append(pg.targets, t)
 	}
 	body.Append(targets)
 
@@ -298,6 +352,9 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 
 	pg.applyModeVisibility()
 
+	// Seed each target row from its device's live state (off-thread).
+	pg.refreshTargets()
+
 	clamp := adw.NewClamp()
 	clamp.SetMaximumSize(600)
 	clamp.SetChild(body)
@@ -437,6 +494,84 @@ func (pg *playground) setSelection(x, y float64) {
 func (pg *playground) selRGB() device.RGB {
 	r, g, b := hsvToRGBInt(pg.hue, pg.sat, 1.0)
 	return device.RGB{R: r, G: g, B: b}
+}
+
+// --- per-light target rows (live state) ---
+
+// refreshTargets queries every target's device once (off the GTK thread) and
+// paints its row from the result. Each target has its own control/session, so
+// the queries run in parallel; results are marshalled back with IdleAdd.
+func (pg *playground) refreshTargets() {
+	for _, t := range pg.targets {
+		if t.ctl == nil {
+			continue
+		}
+		t := t
+		go func() {
+			st, err := t.ctl.Refresh(context.Background())
+			coreglib.IdleAdd(func() {
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "notuya-gui: %s -> %v\n", t.ctl.name(), err)
+					return
+				}
+				t.applyStatus(st)
+			})
+		}()
+	}
+}
+
+// applyStatus paints one row from a fresh device status: the on/off switch, the
+// brightness readout, and the colour swatch. Runs on the GTK thread.
+func (t *playgroundTarget) applyStatus(st deviceStatus) {
+	t.hasState = true
+	t.on = st.On
+
+	// Seed the power switch without firing its command handler.
+	t.suppress = true
+	t.power.SetActive(st.On)
+	t.suppress = false
+
+	if st.On {
+		t.bright.SetText(fmt.Sprintf("%d%%", int(st.BrightPct+0.5)))
+	} else {
+		t.bright.SetText("off")
+	}
+
+	r, g, b := sceneStateColour(stateFromStatus(t.ctl.dev.DeviceID, st))
+	t.col = device.RGB{R: r, G: g, B: b}
+	t.swatch.QueueDraw()
+}
+
+// setPower turns just this light on or off (off the GTK thread), independent of
+// the shared Power switch. The optimistic swatch/label update lands on the next
+// refresh; here we only issue the command.
+func (t *playgroundTarget) setPower(on bool) {
+	ctl := t.ctl
+	if ctl == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		_ = ctl.SetPower(ctx, on)
+	}()
+}
+
+// drawSwatch paints this light's current colour as a small rounded square, or a
+// muted placeholder before the first refresh lands.
+func (t *playgroundTarget) drawSwatch(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
+	w, h := float64(width), float64(height)
+	roundedRect(cr, 0, 0, w, h, 5)
+	if !t.hasState {
+		cr.SetSourceRGBA(1, 1, 1, 0.12)
+	} else {
+		cr.SetSourceRGB(float64(t.col.R)/255, float64(t.col.G)/255, float64(t.col.B)/255)
+	}
+	cr.Fill()
+	roundedRect(cr, 0.5, 0.5, w-1, h-1, 5)
+	cr.SetSourceRGBA(0, 0, 0, 0.2)
+	cr.SetLineWidth(1)
+	cr.Stroke()
 }
 
 func (pg *playground) drawWheel(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/averstraeten/notuya-go/pkg/device"
@@ -31,7 +32,9 @@ type playground struct {
 	wheel     *gtk.DrawingArea
 	swatch    *gtk.DrawingArea
 	bright    *gtk.Scale
+	brightPct *gtk.Label
 	tempRow   *gtk.Box
+	tempStrip *gtk.DrawingArea
 	temp      *gtk.Scale
 	trans     *adw.ToggleGroup
 
@@ -180,13 +183,35 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	})
 	pg.wheel.AddController(drag)
 
-	// Brightness slider.
-	inner.Append(labelledScaleSimple("Brightness", &pg.bright, 1, 100, func(v float64) {
+	// Brightness slider with a live percent readout. Built inline (rather than
+	// via labelledScaleSimple) so the value shows as "72%" in a fixed-width
+	// label instead of a bare number that shifts the slider width as it changes.
+	brightRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
+	brightLbl := gtk.NewLabel("Brightness")
+	brightLbl.SetWidthChars(16)
+	brightLbl.SetXAlign(0.0)
+	brightRow.Append(brightLbl)
+	pg.bright = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 1, 100, 1)
+	pg.bright.SetHExpand(true)
+	pg.bright.SetDrawValue(false)
+	pg.bright.SetRoundDigits(0)
+	disableScaleScroll(pg.bright)
+	pg.brightPct = gtk.NewLabel("100%")
+	pg.brightPct.SetWidthChars(4)
+	pg.brightPct.SetXAlign(1.0)
+	pg.brightPct.AddCSSClass("dim-label")
+	pg.bright.ConnectValueChanged(func() {
+		v := pg.bright.Value()
+		pg.brightPct.SetText(fmt.Sprintf("%d%%", int(v)))
+		pg.swatch.QueueDraw()
 		if pg.suppress {
 			return
 		}
 		pg.setBrightness(v)
-	}))
+	})
+	brightRow.Append(pg.bright)
+	brightRow.Append(pg.brightPct)
+	inner.Append(brightRow)
 	pg.bright.SetValue(100)
 
 	// Bracket brightness drags with a live music stream so the change fades
@@ -218,13 +243,24 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	})
 	pg.bright.AddController(brightDrag)
 
-	// Temperature slider (white mode).
-	pg.tempRow = labelledScaleSimple("Temp (cold→warm)", &pg.temp, 0, 100, func(v float64) {
+	// Temperature control (white mode): a warm→cool gradient strip that shows
+	// the colour you're picking, with the slider beneath it as the input. The
+	// strip paints a marker at the current temperature so the slider reads like
+	// a temperature ramp rather than a bare 0–100 track.
+	pg.tempRow = gtk.NewBox(gtk.OrientationVertical, 4)
+	pg.tempStrip = gtk.NewDrawingArea()
+	pg.tempStrip.SetContentHeight(18)
+	pg.tempStrip.SetHExpand(true)
+	pg.tempStrip.SetDrawFunc(pg.drawTempStrip)
+	pg.tempRow.Append(pg.tempStrip)
+	tempScaleRow := labelledScaleSimple("Warm → Cool", &pg.temp, 0, 100, func(v float64) {
+		pg.tempStrip.QueueDraw()
 		if pg.suppress {
 			return
 		}
 		pg.setTemp(v)
 	})
+	pg.tempRow.Append(tempScaleRow)
 	inner.Append(pg.tempRow)
 
 	// Transition toggle: DP 28's change mode is boolean (0 = direct/jump,
@@ -427,8 +463,49 @@ func (pg *playground) drawWheel(_ *gtk.DrawingArea, cr *cairo.Context, width, he
 	cr.Stroke()
 }
 
+// drawTempStrip paints the warm→cool temperature ramp as a rounded bar with a
+// marker at the current slider value, matching the endpoints used for the scene
+// tile gradients (warm 255,190,120 → cool 201,226,255).
+func (pg *playground) drawTempStrip(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
+	w, h := float64(width), float64(height)
+	radius := h / 2.0
+	roundedRect(cr, 0, 0, w, h, radius)
+	if grad, err := cairo.NewPatternLinear(0, 0, w, 0); err == nil {
+		grad.AddColorStopRGB(0, 255.0/255, 190.0/255, 120.0/255)
+		grad.AddColorStopRGB(1, 201.0/255, 226.0/255, 255.0/255)
+		cr.SetSource(grad)
+	}
+	cr.Fill()
+
+	// Marker at the current temperature (0 = warm/left, 100 = cool/right).
+	t := 0.0
+	if pg.temp != nil {
+		t = pg.temp.Value() / 100.0
+	}
+	if t < 0 {
+		t = 0
+	} else if t > 1 {
+		t = 1
+	}
+	mx := radius + t*(w-2*radius)
+	cr.Arc(mx, h/2, h/2-2, 0, 2*math.Pi)
+	cr.SetSourceRGBA(1, 1, 1, 0.95)
+	cr.SetLineWidth(2.5)
+	cr.Stroke()
+	cr.Arc(mx, h/2, h/2-2, 0, 2*math.Pi)
+	cr.SetSourceRGBA(0, 0, 0, 0.35)
+	cr.SetLineWidth(1)
+	cr.Stroke()
+}
+
 func (pg *playground) drawSwatch(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
-	r, g, b := hsvToRGBInt(pg.hue, pg.sat, 1.0)
+	// Preview the colour at the current brightness so the swatch reflects what
+	// the lights will actually show, not just the hue/sat picked on the wheel.
+	v := 1.0
+	if pg.bright != nil {
+		v = pg.bright.Value() / 100.0
+	}
+	r, g, b := hsvToRGBInt(pg.hue, pg.sat, v)
 	w, h := float64(width), float64(height)
 	radius := h / 2.0
 	roundedRect(cr, 0, 0, w, h, radius)

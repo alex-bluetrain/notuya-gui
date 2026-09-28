@@ -284,28 +284,42 @@ bindings (`python3 -c "import gi; gi.require_version('Atspi','2.0')"`), and a
 running `org.a11y.Bus` (started automatically in a desktop session). `dogtail`
 is optional sugar — raw `Atspi` GI is enough.
 
-Workflow:
+Workflow — one script, `scripts/uitest.py`, owns the whole loop
+(launch → drive/assert → capture → close). It handles both halves: the
+process/compositor side (`launch`/`shot`/`close`, via `hyprctl clients -j`
++ `grim` + Hyprland's Lua close dispatcher) and the a11y side
+(`dump`/`click`/`state`, via `Atspi`):
 
 ```bash
-# 1. Launch with the a11y bridge on (detached, logs to a file).
-GTK_A11Y=atspi setsid ./notuya-gui >/tmp/notuya.log 2>&1 < /dev/null &
-
-# 2. Drive/inspect via the helper script (find by role+name, click, read state).
-GTK_A11Y=atspi python3 scripts/uitest.py dump      # print interactive widgets + state
-GTK_A11Y=atspi python3 scripts/uitest.py click White
-GTK_A11Y=atspi python3 scripts/uitest.py state Colour White
+python3 scripts/uitest.py launch              # start with GTK_A11Y=atspi, wait for the window, save pid
+python3 scripts/uitest.py dump                # print interactive widgets + state
+python3 scripts/uitest.py click White         # invoke a widget's own action by name
+python3 scripts/uitest.py state Colour White  # read checked/active/selected
+python3 scripts/uitest.py shot /tmp/x.png     # grim-capture the window (geometry resolved from pid, no slurp)
+python3 scripts/uitest.py close               # Hyprland Lua close dispatcher, waits for the pid to reap
 ```
 
-`scripts/uitest.py` walks the desktop for the `notuya-gui` application, finds
-widgets by role+name, invokes their action with `Atspi.Action.do_action(n, 0)`,
-and reports `checked`/`active`/`selected`. The Lights tab exposes: page tabs
-(`Scenes`/`Lights`/`Settings`), per-light `check box` + `switch` rows, the
-`Colour`/`White` mode radios, the `Instant`/`Smooth` transition radios, and the
-brightness/temperature sliders — all addressable by name.
+`launch` sets `GTK_A11Y=atspi` itself and records the pid in
+`/tmp/notuya-gui.uitest.pid`; `shot`/`close` resolve the window from that pid
+(falling back to the app class `ar.averstraeten.tuyawheel.app`), so no
+coordinates are ever guessed. `close` reaps cleanly because the app quits when
+its last window closes — it holds no artificial reference (`app.Hold()`) and
+must not call `app.Quit()`/`app.Release()` itself, or GLib trips a
+`g_application_release` use-count assertion. This end-to-end loop
+(launch → click+assert → shot → close) has been verified with zero leftover
+processes and zero GLib assertions.
 
-`omarchy capture screenshot windows save` (Omarchy's sanctioned screenshot
-path; prints the saved PNG) is an *optional* visual confirm on top of AT-SPI
-assertions, never the verification mechanism itself.
+For the a11y commands, `scripts/uitest.py` walks the desktop for the
+`notuya-gui` application, finds widgets by role+name, invokes their action with
+`Atspi.Action.do_action(n, 0)`, and reports `checked`/`active`/`selected`. The
+Lights tab exposes: page tabs (`Scenes`/`Lights`/`Settings`), per-light
+`check box` + `switch` rows, the `Colour`/`White` mode radios, the
+`Instant`/`Smooth` transition radios, and the brightness/temperature sliders —
+all addressable by name.
+
+`python3 scripts/uitest.py shot <path>` (or, interactively,
+`omarchy capture screenshot windows save`) is an *optional* visual confirm on
+top of AT-SPI assertions, never the verification mechanism itself.
 
 ## Hyprland window rules
 

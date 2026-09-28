@@ -122,12 +122,17 @@ func (a *desktopApp) activate() {
 	root.Append(stack)
 	window.SetContent(root)
 
+	// Closing the window tears down the device sessions. We don't call
+	// app.Hold(): with no artificial hold, GApplication drops its last
+	// reference when this window closes and exits on its own, so a window
+	// close (from the title bar, the compositor, or a test harness) is a
+	// clean, complete shutdown. We must NOT also call app.Quit() here —
+	// that double-releases the use count and trips a GLib assertion.
 	window.ConnectCloseRequest(func() bool {
-		go a.closeControls()
-		return false // allow the window to close
+		a.closeControls()
+		return false // allow the window to close; the app quits with it
 	})
 
-	a.app.Hold()
 	window.Present()
 
 	// Populate every panel with live device state.
@@ -672,11 +677,11 @@ func (a *desktopApp) saveCfg() error {
 	return saveConfig(a.configPath, a.cfg.Devices, a.cfg.Rooms, a.cfg.Scenes)
 }
 
-// closeControls tears down every device session. Runs off the GTK thread, then
-// releases the app so it can exit.
+// closeControls tears down every device session. We don't Release() the app:
+// with no matching Hold(), the app exits when its last window closes, and an
+// extra Release() would underflow the use count (GLib assertion).
 func (a *desktopApp) closeControls() {
 	for _, ctl := range a.controls {
 		ctl.Close()
 	}
-	a.app.Release()
 }

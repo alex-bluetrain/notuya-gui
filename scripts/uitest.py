@@ -3,23 +3,29 @@
 
 The correct, non-flaky way to test this GTK4/libadwaita app: query the live
 accessibility tree over org.a11y.Bus, invoke each widget's own action (clicks
-can't miss), and read real widget state for assertions. No screenshots, no
-synthetic mouse/keyboard input.
+can't miss), and read real widget state for assertions. No synthetic mouse or
+keyboard input, no pixel matching.
 
-Launch the app first with the a11y bridge on:
+Full loop (all proven on Hyprland 0.56.2):
 
-    GTK_A11Y=atspi setsid ./notuya-gui >/tmp/notuya.log 2>&1 < /dev/null &
+    python3 scripts/uitest.py launch          # start app on the a11y bus, wait for window
+    python3 scripts/uitest.py dump            # list interactive widgets + state
+    python3 scripts/uitest.py click White     # invoke a widget's own action
+    python3 scripts/uitest.py state Colour White
+    python3 scripts/uitest.py shot /tmp/x.png # capture the real window (grim, address-based)
+    python3 scripts/uitest.py close           # clean exit (no zombie)
 
-Then:
+State/behaviour commands (dump, click, state) need the app on the a11y bus, so
+launch it with launch (or with GTK_A11Y=atspi yourself). The window commands
+(launch, shot, close) talk to Hyprland via hyprctl + grim and resolve the
+window by PID/address, never by guessed geometry.
 
-    GTK_A11Y=atspi python3 scripts/uitest.py dump
-    GTK_A11Y=atspi python3 scripts/uitest.py click White
-    GTK_A11Y=atspi python3 scripts/uitest.py state Colour White
-
-Exit status is non-zero when a target widget is not found, so it composes in
-shell verification chains.
+Exit status is non-zero on failure, so commands compose in shell chains.
 """
 
+import json
+import os
+import subprocess
 import sys
 import time
 
@@ -29,6 +35,10 @@ gi.require_version("Atspi", "2.0")
 from gi.repository import Atspi  # noqa: E402
 
 APP_NAME = "notuya-gui"
+APP_CLASS = "ar.averstraeten.tuyawheel.app"
+BINARY = "./notuya-gui"
+PIDFILE = "/tmp/notuya-gui.uitest.pid"
+LOGFILE = "/tmp/notuya-gui.uitest.log"
 MAX_DEPTH = 25
 INTERACTIVE = {
     "page tab",
@@ -49,6 +59,43 @@ STATE_FLAGS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Hyprland helpers (window resolved by PID/address, never guessed geometry)
+# ---------------------------------------------------------------------------
+def hypr_clients():
+    out = subprocess.run(
+        ["hyprctl", "clients", "-j"], capture_output=True, text=True, check=True
+    ).stdout
+    return json.loads(out)
+
+
+def window_for_pid(pid):
+    for c in hypr_clients():
+        if c.get("pid") == pid:
+            return c
+    return None
+
+
+def window_for_class():
+    for c in hypr_clients():
+        if c.get("class") == APP_CLASS:
+            return c
+    return None
+
+
+def wait_for_window(pid, timeout=12.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        w = window_for_pid(pid)
+        if w and w.get("address"):
+            return w
+        time.sleep(0.2)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# AT-SPI helpers
+# ---------------------------------------------------------------------------
 def app_root():
     """Return the notuya-gui application node, or None."""
     desktop = Atspi.get_desktop(0)
@@ -56,6 +103,16 @@ def app_root():
         a = desktop.get_child_at_index(i)
         if a and (a.get_name() or "") == APP_NAME:
             return a
+    return None
+
+
+def wait_for_app(timeout=12.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        a = app_root()
+        if a is not None:
+            return a
+        time.sleep(0.2)
     return None
 
 
@@ -90,6 +147,106 @@ def find(app, name, role=None):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Commands that talk to the compositor / process (no a11y app node needed)
+# ---------------------------------------------------------------------------
+def cmd_launch(_app, _args):
+    """Start the app on the a11y bus, detached, and wait for its window."""
+    if not os.path.exists(BINARY):
+        print(f"launch: {BINARY} not found (build it first)", file=sys.stderr)
+        return 1
+    env = dict(os.environ, GTK_A11Y="atspi")
+    log = open(LOGFILE, "wb")
+    proc = subprocess.Popen(
+        [BINARY],
+        env=env,
+        stdout=log,
+        stderr=log,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,  # detach: own session, survives this script
+    )
+    with open(PIDFILE, "w") as f:
+        f.write(str(proc.pid))
+    w = wait_for_window(proc.pid)
+    if w is None:
+        print(f"launch: window never appeared (pid {proc.pid}, see {LOGFILE})",
+              file=sys.stderr)
+        return 1
+    print(f"launched pid={proc.pid} addr={w['address']} title={w.get('title')!r}")
+    return 0
+
+
+def resolve_target_window():
+    """Window dict for the launched pid, else any app-class window."""
+    try:
+        with open(PIDFILE) as f:
+            pid = int(f.read().strip())
+        w = window_for_pid(pid)
+        if w:
+            return w, pid
+    except (FileNotFoundError, ValueError):
+        pass
+    w = window_for_class()
+    return (w, w["pid"]) if w else (None, None)
+
+
+def cmd_shot(_app, args):
+    """grim-capture the real window by its Hyprland geometry (address-resolved)."""
+    path = args[0] if args else "/tmp/notuya-gui.png"
+    w, _pid = resolve_target_window()
+    if w is None:
+        print("shot: no notuya-gui window found", file=sys.stderr)
+        return 1
+    x, y = w["at"]
+    cw, ch = w["size"]
+    geo = f"{x},{y} {cw}x{ch}"
+    r = subprocess.run(["grim", "-g", geo, path], capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"shot: grim failed: {r.stderr.strip()}", file=sys.stderr)
+        return 1
+    print(f"saved {path} ({geo})")
+    return 0
+
+
+def cmd_close(_app, _args):
+    """Clean exit via Hyprland's Lua dispatcher (legacy closewindow is dead on 0.56)."""
+    w, pid = resolve_target_window()
+    if w is None:
+        print("close: no notuya-gui window found (already gone?)")
+        return 0
+    addr = w["address"]
+    subprocess.run(
+        ["hyprctl", "dispatch", f'hl.dsp.window.close({{ window = "address:{addr}" }})'],
+        capture_output=True, text=True,
+    )
+    # The fixed app quits when its window closes; wait for the process to reap.
+    if pid:
+        for _ in range(30):
+            if not _pid_alive(pid):
+                print(f"closed {addr} -> pid {pid} reaped")
+                try:
+                    os.remove(PIDFILE)
+                except OSError:
+                    pass
+                return 0
+            time.sleep(0.1)
+        print(f"close: dispatched but pid {pid} still alive", file=sys.stderr)
+        return 1
+    print(f"closed {addr}")
+    return 0
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Commands that need the app on the a11y bus
+# ---------------------------------------------------------------------------
 def cmd_dump(app, _args):
     for n in walk(app):
         role = n.get_role_name()
@@ -133,7 +290,16 @@ def cmd_state(app, args):
     return rc
 
 
-COMMANDS = {"dump": cmd_dump, "click": cmd_click, "state": cmd_state}
+# launch/shot/close don't need the a11y app node; the rest do.
+NO_APP = {"launch", "shot", "close"}
+COMMANDS = {
+    "launch": cmd_launch,
+    "shot": cmd_shot,
+    "close": cmd_close,
+    "dump": cmd_dump,
+    "click": cmd_click,
+    "state": cmd_state,
+}
 
 
 def main(argv):
@@ -141,16 +307,19 @@ def main(argv):
         print(__doc__)
         print("commands:", ", ".join(COMMANDS))
         return 2
+    cmd = argv[1]
     Atspi.init()
-    app = app_root()
+    if cmd in NO_APP:
+        return COMMANDS[cmd](None, argv[2:])
+    app = wait_for_app()
     if app is None:
         print(
             f"error: {APP_NAME!r} not on the a11y bus. "
-            "Launch it with GTK_A11Y=atspi and try again.",
+            "Run 'uitest.py launch' (or start it with GTK_A11Y=atspi) first.",
             file=sys.stderr,
         )
         return 3
-    return COMMANDS[argv[1]](app, argv[2:])
+    return COMMANDS[cmd](app, argv[2:])
 
 
 if __name__ == "__main__":

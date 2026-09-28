@@ -28,6 +28,7 @@ type lightsTab struct {
 
 	cc    *colourControls
 	trans *adw.ToggleGroup
+	power *adw.SwitchRow
 
 	// current shared mode (colour selection lives in cc)
 	mode string
@@ -40,16 +41,15 @@ type lightsTab struct {
 	suppress bool
 }
 
-// lightTarget is one device's row in the target list. The checkbox selects
-// whether the shared wheel/sliders drive this light; the swatch, brightness
-// readout, and per-light power switch reflect and control this light's own live
-// state (seeded from a Refresh on open), independent of the shared controls.
+// lightTarget is one device's row in the target list. The checkbox is the row's
+// only control: it selects whether the shared controls below drive this light.
+// The swatch and subtitle are read-only — they report this light's live state
+// (seeded from a Refresh on open, then kept current as broadcasts go out).
 type lightTarget struct {
 	ctl    *control
+	row    *adw.ActionRow
 	check  *gtk.CheckButton
 	swatch *gtk.DrawingArea
-	bright *gtk.Label
-	power  *gtk.Switch
 
 	// state is the last known state for this light (seeded from a refresh,
 	// then kept current optimistically as broadcasts go out); col is the
@@ -58,10 +58,6 @@ type lightTarget struct {
 	state    SceneState
 	col      device.RGB
 	hasState bool
-
-	// suppress guards the power switch's handler while it is being set
-	// programmatically from a refresh, so seeding state does not fire a command.
-	suppress bool
 }
 
 // buildLightsTab builds the target list on top and the shared controls below. It returns the scrolled widget for the "Lights" tab.
@@ -79,7 +75,7 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	// light's own live state.
 	targets := adw.NewPreferencesGroup()
 	targets.SetTitle("Lights")
-	targets.SetDescription("Selected lights receive the colour below")
+	targets.SetDescription("The controls below apply to the selected lights")
 	for i := range a.cfg.Devices {
 		dev := a.cfg.Devices[i]
 		name := dev.Name
@@ -90,16 +86,21 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 
 		row := adw.NewActionRow()
 		row.SetTitle(name)
+		row.SetSubtitle("…")
+		t.row = row
 
 		check := gtk.NewCheckButton()
 		check.SetActive(true)
 		check.SetVAlign(gtk.AlignCenter)
-		check.SetTooltipText("Send the shared colour to this light")
+		check.SetTooltipText("Apply the controls below to this light")
+		// Selecting/deselecting changes who Power speaks for, so re-derive it.
+		check.ConnectToggled(func() { lt.syncPowerSwitch() })
 		row.AddPrefix(check)
 		row.SetActivatableWidget(check)
 		t.check = check
 
-		// Live colour swatch for this light.
+		// Live colour swatch: this light's current colour and on/off state,
+		// read-only (the row's only control is the selection checkbox).
 		t.swatch = gtk.NewDrawingArea()
 		t.swatch.SetContentWidth(20)
 		t.swatch.SetContentHeight(20)
@@ -107,30 +108,26 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 		t.swatch.SetDrawFunc(t.drawSwatch)
 		row.AddSuffix(t.swatch)
 
-		// Brightness readout for this light ("—" until first refresh).
-		t.bright = gtk.NewLabel("—")
-		t.bright.SetWidthChars(4)
-		t.bright.SetXAlign(1.0)
-		t.bright.SetVAlign(gtk.AlignCenter)
-		t.bright.AddCSSClass("dim-label")
-		row.AddSuffix(t.bright)
-
-		// Per-light power switch (independent of the shared Power switch).
-		t.power = gtk.NewSwitch()
-		t.power.SetVAlign(gtk.AlignCenter)
-		t.power.ConnectStateSet(func(state bool) bool {
-			if t.suppress {
-				return false
-			}
-			t.setPower(state)
-			return false
-		})
-		row.AddSuffix(t.power)
-
 		targets.Add(row)
 		lt.targets = append(lt.targets, t)
 	}
 	body.Append(targets)
+
+	// Power for the selected lights. An AdwSwitchRow is one widget: the label
+	// and the switch belong to the same row and the whole row toggles it, so
+	// there is no loose caption floating beside an unrelated control.
+	powerGroup := adw.NewPreferencesGroup()
+	lt.power = adw.NewSwitchRow()
+	lt.power.SetTitle("Power")
+	lt.power.SetSubtitle("Turn the selected lights on or off")
+	lt.power.NotifyProperty("active", func() {
+		if lt.suppress {
+			return
+		}
+		lt.setPower(lt.power.Active())
+	})
+	powerGroup.Add(lt.power)
+	body.Append(powerGroup)
 
 	// Shared controls, in a card.
 	controls := gtk.NewBox(gtk.OrientationVertical, 8)
@@ -141,23 +138,6 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	inner.SetMarginStart(12)
 	inner.SetMarginEnd(12)
 	controls.Append(inner)
-
-	// Power switch for the selected lights: label at the start, switch at the
-	// end, spanning the card like an AdwActionRow so the card keeps one
-	// alignment system.
-	powerRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	powerLabel := gtk.NewLabel("Power")
-	powerLabel.SetXAlign(0.0)
-	powerLabel.SetHExpand(true)
-	powerRow.Append(powerLabel)
-	powerSwitch := gtk.NewSwitch()
-	powerSwitch.SetVAlign(gtk.AlignCenter)
-	powerSwitch.ConnectStateSet(func(state bool) bool {
-		lt.setPower(state)
-		return false
-	})
-	powerRow.Append(powerSwitch)
-	inner.Append(powerRow)
 
 	// Shared colour-selection controls (mode toggle, wheel, temperature,
 	// brightness) — the same widget set the scene editor uses.
@@ -301,6 +281,27 @@ func (lt *lightsTab) onModeChanged() {
 	}
 }
 
+// syncPowerSwitch points the shared Power switch at the selected lights: on if
+// any of them is on, so flipping it off is always the useful action. Setting it
+// is guarded by suppress so seeding does not broadcast a power command back to
+// the bulbs. Rows with no state yet (unreachable device) do not vote.
+func (lt *lightsTab) syncPowerSwitch() {
+	any := false
+	for _, t := range lt.checked() {
+		if t.hasState && t.state.On {
+			any = true
+			break
+		}
+	}
+	if lt.power.Active() == any {
+		return
+	}
+	was := lt.suppress
+	lt.suppress = true
+	lt.power.SetActive(any)
+	lt.suppress = was
+}
+
 // transitionValue maps the Instant|Smooth toggle to DP 28's change-mode flag:
 // 0 = direct (Instant), 1 = gradual (Smooth).
 func transitionValue(fade bool) int {
@@ -419,6 +420,7 @@ func (lt *lightsTab) refreshTargets() {
 					return
 				}
 				t.applyStatus(st)
+				lt.syncPowerSwitch()
 			})
 		}()
 	}
@@ -432,36 +434,18 @@ func (t *lightTarget) applyStatus(st deviceStatus) {
 	t.repaint()
 }
 
-// repaint redraws the row's widgets from t.state. Runs on the GTK thread.
+// repaint redraws the row from t.state: the subtitle reports on/off and
+// brightness, the swatch shows the colour. Runs on the GTK thread.
 func (t *lightTarget) repaint() {
-	// Seed the power switch without firing its command handler.
-	t.suppress = true
-	t.power.SetActive(t.state.On)
-	t.suppress = false
-
 	if t.state.On {
-		t.bright.SetText(fmt.Sprintf("%d%%", int(t.state.Bright+0.5)))
+		t.row.SetSubtitle(fmt.Sprintf("On · %d%%", int(t.state.Bright+0.5)))
 	} else {
-		t.bright.SetText("off")
+		t.row.SetSubtitle("Off")
 	}
 
 	r, g, b := sceneStateColour(t.state)
 	t.col = device.RGB{R: r, G: g, B: b}
 	t.swatch.QueueDraw()
-}
-
-// setPower turns just this light on or off (off the GTK thread), independent
-// of the shared Power switch, and optimistically repaints the row.
-func (t *lightTarget) setPower(on bool) {
-	ctl := t.ctl
-	if ctl == nil {
-		return
-	}
-	ctl.async("power", func(ctx context.Context) error { return ctl.SetPower(ctx, on) })
-	if t.hasState {
-		t.state.On = on
-		t.repaint()
-	}
 }
 
 // drawSwatch paints this light's current colour as a small rounded square, or a

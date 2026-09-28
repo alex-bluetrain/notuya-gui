@@ -263,11 +263,20 @@ its *own* action (clicks can't miss), and read real state
 (`checked`/`active`/slider value) for assertions. No app changes are needed —
 the widgets already expose this.
 
-Do **not** rely on the approaches tried earlier and found flaky: `ydotool`
-cursor warping, `grim` pixel captures, or GTK Broadway canvas-coordinate
-clicks. Those fight Wayland, leave stuck `poll_schedule_timeout` zombies, and
-verify pixels instead of state. Fuzzy screenshot matching (openQA "needles")
-is likewise fragile and out of scope here.
+**NEVER use the GTK Broadway backend (`gtk4-broadwayd`, `GDK_BACKEND=broadway`).
+Banned outright — do not launch it, do not screenshot it, do not "fall back" to
+it for any reason.** It renders to an HTML canvas with no accessibility tree, so
+it verifies nothing and only tempts pixel-guessing.
+
+Do **not** rely on the other approaches tried earlier and found flaky: `ydotool`
+cursor warping or `grim` pixel captures. Those fight Wayland, leave stuck
+`poll_schedule_timeout` zombies, and verify pixels instead of state. Fuzzy
+screenshot matching (openQA "needles") is likewise fragile and out of scope here.
+
+When a **visual** check is genuinely needed (e.g. "does this look right"), use
+Omarchy's sanctioned capture of the real window and nothing else:
+`omarchy capture screenshot windows save` (prints the saved PNG path). That is a
+confirm on top of AT-SPI assertions, never the verification mechanism itself.
 
 Prerequisites (already present on the dev box, Arch/Omarchy):
 `at-spi2-core` (the a11y bus + GTK atk-bridge), the `Atspi` GObject-introspection

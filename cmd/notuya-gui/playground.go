@@ -284,7 +284,6 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	pg.bright.ConnectValueChanged(func() {
 		v := pg.bright.Value()
 		pg.brightPct.SetText(fmt.Sprintf("%d%%", int(v)))
-		pg.wheel.QueueDraw()
 		if pg.suppress {
 			return
 		}
@@ -632,20 +631,18 @@ func (pg *playground) drawWheel(_ *gtk.DrawingArea, cr *cairo.Context, width, he
 	cr.Stroke()
 
 	// Hue-style thumb: a large white ring whose centre is filled with the
-	// selected colour at the current brightness — the thumb IS the preview.
-	// Its centre rides all the way to the disc edge at full saturation; the
-	// padded drawing area keeps the overhang from being clipped.
+	// selected hue/sat — the thumb IS the preview. Brightness is deliberately
+	// not mixed in: it is a separate control, and dimming the thumb would
+	// conflate the two. The thumb's centre rides all the way to the disc edge
+	// at full saturation; the padded drawing area keeps the overhang from
+	// being clipped.
 	const thumbR = 12.0
 	angle := pg.hue * 2 * math.Pi
 	dist := pg.sat * radius
 	sx := cx + dist*math.Cos(angle)
 	sy := cy + dist*math.Sin(angle)
 
-	v := 1.0
-	if pg.bright != nil {
-		v = pg.bright.Value() / 100.0
-	}
-	r, g, b := hsvToRGBInt(pg.hue, pg.sat, v)
+	r, g, b := hsvToRGBInt(pg.hue, pg.sat, 1.0)
 
 	// Drop shadow.
 	cr.Arc(sx, sy+1.5, thumbR+1, 0, 2*math.Pi)

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/averstraeten/notuya-go/pkg/device"
+	"github.com/alex-bluetrain/notuya-go/pkg/device"
 )
 
 // stateFromStatus maps a refreshed deviceStatus to a SceneState. An off light

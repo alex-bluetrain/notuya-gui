@@ -6,8 +6,8 @@ import (
 	"os"
 	"sync"
 
-	"github.com/averstraeten/notuya-go/pkg/bulb"
-	"github.com/averstraeten/notuya-go/pkg/device"
+	"github.com/alex-bluetrain/notuya-go/pkg/bulb"
+	"github.com/alex-bluetrain/notuya-go/pkg/device"
 	"github.com/diamondburned/gotk4-layer-shell/pkg/gtk4layershell"
 	"github.com/diamondburned/gotk4/pkg/cairo"
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"

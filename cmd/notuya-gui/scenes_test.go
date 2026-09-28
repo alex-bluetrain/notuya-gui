@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/averstraeten/notuya-go/pkg/device"
+	"github.com/alex-bluetrain/notuya-go/pkg/device"
 )
 
 func TestStateFromStatus(t *testing.T) {

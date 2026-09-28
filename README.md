@@ -3,7 +3,7 @@
 A native Tuya smart-bulb controller, written in Go. It is a port of
 `picker.py` (a GTK4 layer-shell overlay that drove the bulbs through the
 `notuyad` HTTP daemon), rewritten to drive the bulbs **in-process** by
-importing the [`notuya-go`](https://github.com/averstraeten/notuya-go) library
+importing the [`notuya-go`](https://github.com/alex-bluetrain/notuya-go) library
 directly. No daemon, no subprocess, no Python.
 
 The binary has three modes:
@@ -181,12 +181,12 @@ remain CGO-free.
 
 ## Relationship to notuya-go
 
-A separate Go module that depends on `github.com/averstraeten/notuya-go`. In
+A separate Go module that depends on `github.com/alex-bluetrain/notuya-go`. In
 development the two repos sit side by side, wired with a local `replace`:
 
 ```
-require github.com/averstraeten/notuya-go v0.0.0
-replace github.com/averstraeten/notuya-go => ../notuya-go
+require github.com/alex-bluetrain/notuya-go v0.0.0
+replace github.com/alex-bluetrain/notuya-go => ../notuya-go
 ```
 
 It consumes the promoted `pkg/` surface: `pkg/protocol`, `pkg/protocol35`,

@@ -7,9 +7,9 @@ import (
 	"os"
 	"sync"
 
-	"github.com/averstraeten/notuya-go/pkg/bulb"
-	"github.com/averstraeten/notuya-go/pkg/device"
-	"github.com/averstraeten/notuya-go/pkg/protocol35"
+	"github.com/alex-bluetrain/notuya-go/pkg/bulb"
+	"github.com/alex-bluetrain/notuya-go/pkg/device"
+	"github.com/alex-bluetrain/notuya-go/pkg/protocol35"
 )
 
 // deviceStatus is the parsed snapshot the desktop app renders per device. It

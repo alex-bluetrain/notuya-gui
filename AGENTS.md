@@ -33,13 +33,13 @@ is that sibling.
 ## Relationship to notuya-go
 
 `notuya-gui` is a **separate Go module** that depends on
-`github.com/averstraeten/notuya-go`. In development the two repos sit
+`github.com/alex-bluetrain/notuya-go`. In development the two repos sit
 side by side and are wired with a local `replace`:
 
 ```
 // go.mod
-require github.com/averstraeten/notuya-go v0.0.0
-replace github.com/averstraeten/notuya-go => ../notuya-go
+require github.com/alex-bluetrain/notuya-go v0.0.0
+replace github.com/alex-bluetrain/notuya-go => ../notuya-go
 ```
 
 Nothing in notuya-go has to be published or tagged for this to work. The

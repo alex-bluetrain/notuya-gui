@@ -4,3 +4,7 @@
 # Agent tooling
 .mastracode/
 __pycache__/
+
+# local dev only
+go.work
+go.work.sum

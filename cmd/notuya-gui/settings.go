@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/averstraeten/notuya-go/pkg/discovery"
+	"github.com/alex-bluetrain/notuya-go/pkg/discovery"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	coreglib "github.com/diamondburned/gotk4/pkg/glib/v2"

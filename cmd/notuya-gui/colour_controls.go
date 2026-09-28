@@ -5,7 +5,7 @@ import (
 	"math"
 	"sync"
 
-	"github.com/averstraeten/notuya-go/pkg/device"
+	"github.com/alex-bluetrain/notuya-go/pkg/device"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/cairo"
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"

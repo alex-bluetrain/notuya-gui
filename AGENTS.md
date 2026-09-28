@@ -253,6 +253,51 @@ Both the standalone window and the in-app **Settings** tab share
 - If the app or picker is launched with **no** config file, it exits with a
   hint pointing at `notuya-gui -config` so a first-run user can create one.
 
+## Testing the GUI (AT-SPI, not screenshots)
+
+**The correct, non-flaky way to drive and verify this app is the AT-SPI
+accessibility tree — not screenshots, not synthetic mouse/keyboard input.**
+GTK4/libadwaita publishes every widget's role, name, state, and actions over
+the a11y D-Bus (`org.a11y.Bus`), so a test can find a widget by name, invoke
+its *own* action (clicks can't miss), and read real state
+(`checked`/`active`/slider value) for assertions. No app changes are needed —
+the widgets already expose this.
+
+Do **not** rely on the approaches tried earlier and found flaky: `ydotool`
+cursor warping, `grim` pixel captures, or GTK Broadway canvas-coordinate
+clicks. Those fight Wayland, leave stuck `poll_schedule_timeout` zombies, and
+verify pixels instead of state. Fuzzy screenshot matching (openQA "needles")
+is likewise fragile and out of scope here.
+
+Prerequisites (already present on the dev box, Arch/Omarchy):
+`at-spi2-core` (the a11y bus + GTK atk-bridge), the `Atspi` GObject-introspection
+bindings (`python3 -c "import gi; gi.require_version('Atspi','2.0')"`), and a
+running `org.a11y.Bus` (started automatically in a desktop session). `dogtail`
+is optional sugar — raw `Atspi` GI is enough.
+
+Workflow:
+
+```bash
+# 1. Launch with the a11y bridge on (detached, logs to a file).
+GTK_A11Y=atspi setsid ./notuya-gui >/tmp/notuya.log 2>&1 < /dev/null &
+
+# 2. Drive/inspect via the helper script (find by role+name, click, read state).
+GTK_A11Y=atspi python3 scripts/uitest.py dump      # print interactive widgets + state
+GTK_A11Y=atspi python3 scripts/uitest.py click White
+GTK_A11Y=atspi python3 scripts/uitest.py state Colour White
+```
+
+`scripts/uitest.py` walks the desktop for the `notuya-gui` application, finds
+widgets by role+name, invokes their action with `Atspi.Action.do_action(n, 0)`,
+and reports `checked`/`active`/`selected`. The Lights tab exposes: page tabs
+(`Scenes`/`Lights`/`Settings`), per-light `check box` + `switch` rows, the
+`Colour`/`White` mode radios, the `Instant`/`Smooth` transition radios, and the
+brightness/temperature sliders — all addressable by name.
+
+`omarchy capture screenshot windows save` (Omarchy's sanctioned screenshot
+path; prints the saved PNG) is an *optional* visual confirm on top of AT-SPI
+assertions, never the verification mechanism itself.
+
 ## Hyprland window rules
 
 The picker is a layer-shell overlay, so under Hyprland it is a layer

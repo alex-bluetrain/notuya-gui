@@ -28,6 +28,7 @@ Exit status is non-zero on failure, so commands compose in shell chains.
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -99,20 +100,36 @@ def wait_for_window(pid, timeout=12.0):
 # ---------------------------------------------------------------------------
 # AT-SPI helpers
 # ---------------------------------------------------------------------------
-def app_root():
-    """Return the notuya-gui application node, or None."""
+def app_nodes():
+    """All notuya-gui application nodes on the a11y bus."""
     desktop = Atspi.get_desktop(0)
+    out = []
     for i in range(desktop.get_child_count()):
         a = desktop.get_child_at_index(i)
         if a and (a.get_name() or "") == APP_NAME:
+            out.append(a)
+    return out
+
+
+def app_root(exclude=()):
+    """The notuya-gui app node to drive, or None.
+
+    Prefers the instance started by `launch` (pidfile); otherwise the first
+    one whose pid is not in `exclude`. Other notuya-gui instances (e.g. the
+    user's own) are on the same bus, so matching by name alone is ambiguous.
+    """
+    nodes = [a for a in app_nodes() if a.get_process_id() not in exclude]
+    want = read_pid()
+    for a in nodes:
+        if a.get_process_id() == want:
             return a
-    return None
+    return nodes[0] if nodes else None
 
 
-def wait_for_app(timeout=12.0):
+def wait_for_app(exclude=(), timeout=12.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        a = app_root()
+        a = app_root(exclude)
         if a is not None:
             return a
         time.sleep(0.2)
@@ -140,14 +157,22 @@ def n_actions(node):
 
 
 def find(app, name, role=None):
-    """First widget matching name (and role, if given)."""
+    """Widget matching name (and role, if given).
+
+    Prefers a node that has an action: a button with a tooltip exposes both
+    the button and its tooltip under the same name, and only the button can
+    be clicked.
+    """
+    fallback = None
     for n in walk(app):
         if (n.get_name() or "") != name:
             continue
         if role is not None and n.get_role_name() != role:
             continue
-        return n
-    return None
+        if n_actions(n) > 0:
+            return n
+        fallback = fallback or n
+    return fallback
 
 
 # ---------------------------------------------------------------------------
@@ -179,16 +204,22 @@ def cmd_launch(_app, _args):
     return 0
 
 
-def resolve_target_window():
-    """Window dict for the launched pid, else any app-class window."""
+def read_pid():
+    """Pid recorded by `launch`, or None."""
     try:
         with open(PIDFILE) as f:
-            pid = int(f.read().strip())
+            return int(f.read().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def resolve_target_window():
+    """Window dict for the launched pid, else any app-class window."""
+    pid = read_pid()
+    if pid is not None:
         w = window_for_pid(pid)
         if w:
             return w, pid
-    except (FileNotFoundError, ValueError):
-        pass
     w = window_for_class()
     return (w, w["pid"]) if w else (None, None)
 
@@ -262,9 +293,11 @@ def cmd_cage(_app, args):
     inside cage joins the session a11y bus, so any widget names given are
     clicked via AT-SPI before the frame is grabbed.
 
-    Requires no other notuya-gui instance on the a11y bus (it would be
-    ambiguous which one the clicks hit).
+    Instances already on the a11y bus (e.g. the user's own) are ignored, so
+    clicks only ever hit the app inside cage. Cage is always torn down, even
+    if a click fails.
     """
+    preexisting = {a.get_process_id() for a in app_nodes()}
     path = args[0] if args and args[0].endswith(".png") else "/tmp/notuya-gui-cage.png"
     clicks = args[1:] if args and args[0].endswith(".png") else args
     try:
@@ -284,9 +317,11 @@ def cmd_cage(_app, args):
     cage = subprocess.Popen(
         ["cage", "--", "bash", "-c", inner],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        start_new_session=True,  # own process group: teardown reaps bash + app too
     )
+    out = ""
     try:
-        app = wait_for_app()
+        app = wait_for_app(exclude=preexisting)
         if app is None:
             print("cage: app never appeared on the a11y bus", file=sys.stderr)
             return 1
@@ -303,10 +338,15 @@ def cmd_cage(_app, args):
         open(CAGE_MARKER, "w").close()
         out, _ = cage.communicate(timeout=20)
     except subprocess.TimeoutExpired:
-        cage.kill()
         print("cage: timed out", file=sys.stderr)
         return 1
     finally:
+        if cage.poll() is None:
+            try:
+                os.killpg(cage.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            cage.wait()
         try:
             os.remove(CAGE_MARKER)
         except OSError:

@@ -3,59 +3,18 @@ package main
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
 
 	"github.com/averstraeten/notuya-go/pkg/device"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/cairo"
-	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	coreglib "github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
-// tempScaleCSS paints the temperature scale's trough with the warm→cool
-// gradient and neutralises GTK's default trough styling so the ramp reads as
-// one clean bar: the filled ("highlight") and unfilled halves share the same
-// gradient, and the slider keeps a round white knob like the Brightness scale.
-const tempScaleCSS = `
-scale.temp-scale trough {
-  background-image: linear-gradient(to right,
-    rgb(255,166,70) 0%,
-    rgb(255,246,235) 50%,
-    rgb(158,202,255) 100%);
-  background-color: transparent;
-  border: none;
-  min-height: 10px;
-  border-radius: 6px;
-}
-scale.temp-scale highlight {
-  background-color: transparent;
-  background-image: none;
-  border: none;
-}
-scale.temp-scale fill {
-  background-color: transparent;
-  background-image: none;
-}
-scale.temp-scale slider {
-  background-color: #ffffff;
-  border: 1px solid alpha(#000, 0.2);
-  box-shadow: 0 1px 3px alpha(#000, 0.35);
-  min-width: 18px;
-  min-height: 18px;
-  border-radius: 50%;
-  margin: -6px;
-}
-`
-
 // playgroundWheelSize is the diameter of the shared colour wheel in the Lights
-// playground. Matches the scene editor's wheel for a consistent feel.
+// playground.
 const playgroundWheelSize = 240
-
-// playgroundWheelPad pads the wheel's drawing area so the thumb — whose centre
-// rides the disc edge at full saturation — can overhang without being clipped.
-const playgroundWheelPad = 16
 
 // playground is the Lights tab: a manual "playground" with a checkbox list of
 // devices and a single set of controls (colour wheel, mode, brightness, temp)
@@ -69,18 +28,10 @@ type playground struct {
 
 	targets []*playgroundTarget
 
-	modeToggle *adw.ToggleGroup
-	wheelRow   *gtk.Box
-	wheel      *gtk.DrawingArea
-	bright     *gtk.Scale
-	brightPct  *gtk.Label
-	tempRow    *gtk.Box
-	temp       *gtk.Scale
-	trans      *adw.ToggleGroup
+	cc    *colourControls
+	trans *adw.ToggleGroup
 
-	// current shared selection
-	hue  float64
-	sat  float64
+	// current shared mode (colour selection lives in cc)
 	mode string
 
 	// brightDragging is true while the brightness slider is being dragged in
@@ -211,91 +162,50 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	powerRow.Append(powerSwitch)
 	inner.Append(powerRow)
 
-	// Mode selector: a full-width Colour|White segmented toggle. No label —
-	// the control is self-evident next to the wheel/temperature slider.
-	pg.modeToggle = newModeToggle(func(bool) {
-		if pg.suppress {
-			return
-		}
-		pg.onModeChanged()
+	// Shared colour-selection controls (mode toggle, wheel, temperature,
+	// brightness) — the same widget set the scene editor uses.
+	pg.cc = newColourControls(a.wheelSurface, playgroundWheelSize, colourCallbacks{
+		OnMode: func(bool) {
+			if pg.suppress {
+				return
+			}
+			pg.onModeChanged()
+		},
+		// Wheel drag → live preview on every checked light.
+		OnDragBegin: func(rgb device.RGB) {
+			tt := transitionValue(pg.trans.ActiveName() == "fade")
+			for _, t := range pg.checked() {
+				t.ctl.BeginLiveDrag(rgb, tt)
+			}
+		},
+		OnDragUpdate: func(rgb device.RGB) {
+			for _, t := range pg.checked() {
+				t.ctl.UpdateLiveDrag(rgb)
+			}
+			pg.mirrorColour()
+		},
+		OnDragEnd: func(rgb device.RGB) {
+			for _, t := range pg.checked() {
+				t.ctl.UpdateLiveDrag(rgb)
+				ctl := t.ctl
+				go ctl.EndLiveDrag()
+			}
+			pg.mirrorColour()
+		},
+		OnBright: func(v float64) {
+			if pg.suppress {
+				return
+			}
+			pg.setBrightness(v)
+		},
+		OnTemp: func(v float64) {
+			if pg.suppress {
+				return
+			}
+			pg.setTemp(v)
+		},
 	})
-	inner.Append(pg.modeToggle)
-
-	// Colour wheel (colour mode). The wheel is the visual focus: a large soft-
-	// edged disc centred in the card whose thumb doubles as the live colour
-	// preview, Hue-app style — no separate swatch.
-	pg.wheelRow = gtk.NewBox(gtk.OrientationVertical, 12)
-	pg.wheelRow.SetHAlign(gtk.AlignCenter)
-	pg.wheelRow.SetMarginTop(8)
-	pg.wheelRow.SetMarginBottom(8)
-
-	pg.wheel = gtk.NewDrawingArea()
-	pg.wheel.SetContentWidth(playgroundWheelSize + 2*playgroundWheelPad)
-	pg.wheel.SetContentHeight(playgroundWheelSize + 2*playgroundWheelPad)
-	pg.wheel.SetHAlign(gtk.AlignCenter)
-	pg.wheel.SetDrawFunc(pg.drawWheel)
-	pg.wheelRow.Append(pg.wheel)
-	inner.Append(pg.wheelRow)
-
-	// Wheel drag → live preview on every checked light + shared hue/sat.
-	drag := gtk.NewGestureDrag()
-	var startX, startY float64
-	drag.ConnectDragBegin(func(x, y float64) {
-		startX, startY = x, y
-		pg.setSelection(x, y)
-		rgb := pg.selRGB()
-		tt := transitionValue(pg.trans.ActiveName() == "fade")
-		for _, t := range pg.checked() {
-			t.ctl.BeginLiveDrag(rgb, tt)
-		}
-	})
-	drag.ConnectDragUpdate(func(ox, oy float64) {
-		pg.setSelection(startX+ox, startY+oy)
-		rgb := pg.selRGB()
-		for _, t := range pg.checked() {
-			t.ctl.UpdateLiveDrag(rgb)
-		}
-		pg.mirrorColour()
-	})
-	drag.ConnectDragEnd(func(ox, oy float64) {
-		pg.setSelection(startX+ox, startY+oy)
-		rgb := pg.selRGB()
-		for _, t := range pg.checked() {
-			t.ctl.UpdateLiveDrag(rgb)
-			ctl := t.ctl
-			go ctl.EndLiveDrag()
-		}
-		pg.mirrorColour()
-	})
-	pg.wheel.AddController(drag)
-
-	// Brightness slider with a live percent readout. Full-width, prefixed by a
-	// brightness icon rather than a text label column, so every control in the
-	// card shares one alignment rhythm.
-	brightRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	brightIcon := gtk.NewImageFromIconName("display-brightness-symbolic")
-	brightIcon.AddCSSClass("dim-label")
-	brightRow.Append(brightIcon)
-	pg.bright = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 1, 100, 1)
-	pg.bright.SetHExpand(true)
-	pg.bright.SetDrawValue(false)
-	pg.bright.SetRoundDigits(0)
-	disableScaleScroll(pg.bright)
-	pg.brightPct = gtk.NewLabel("100%")
-	pg.brightPct.SetWidthChars(4)
-	pg.brightPct.SetXAlign(1.0)
-	pg.brightPct.AddCSSClass("dim-label")
-	pg.bright.ConnectValueChanged(func() {
-		v := pg.bright.Value()
-		pg.brightPct.SetText(fmt.Sprintf("%d%%", int(v)))
-		if pg.suppress {
-			return
-		}
-		pg.setBrightness(v)
-	})
-	brightRow.Append(pg.bright)
-	brightRow.Append(pg.brightPct)
-	pg.bright.SetValue(100)
+	pg.cc.AppendTo(inner)
 
 	// Bracket brightness drags with a live music stream so the change fades
 	// (DP 28) in colour mode when Fade is on, matching the wheel. Outside a
@@ -305,8 +215,8 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 		if pg.mode != device.ModeColour {
 			return
 		}
-		v := pg.bright.Value()
-		r, g, b := hsvToRGBInt(pg.hue, pg.sat, v/100.0)
+		v := pg.cc.Bright.Value()
+		r, g, b := hsvToRGBInt(pg.cc.hue, pg.cc.sat, v/100.0)
 		rgb := device.RGB{R: r, G: g, B: b}
 		tt := transitionValue(pg.trans.ActiveName() == "fade")
 		for _, t := range pg.checked() {
@@ -324,39 +234,7 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 			go ctl.EndLiveDrag()
 		}
 	})
-	pg.bright.AddController(brightDrag)
-
-	// Temperature control (white mode): the same native gtk.Scale as Brightness,
-	// so the two rows match. A CSS provider paints this one scale's trough with
-	// the warm→cool gradient (see tempScaleCSS), and hides the filled/unfilled
-	// split and the numeric value, so the gradient reads as one clean ramp.
-	pg.tempRow = gtk.NewBox(gtk.OrientationHorizontal, 8)
-	tempIcon := gtk.NewImageFromIconName("night-light-symbolic")
-	tempIcon.AddCSSClass("dim-label")
-	pg.tempRow.Append(tempIcon)
-	pg.temp = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 0, 100, 1)
-	pg.temp.SetHExpand(true)
-	pg.temp.SetDrawValue(false)
-	pg.temp.SetRoundDigits(0)
-	pg.temp.AddCSSClass("temp-scale")
-	disableScaleScroll(pg.temp)
-	pg.temp.ConnectValueChanged(func() {
-		if pg.suppress {
-			return
-		}
-		pg.setTemp(pg.temp.Value())
-	})
-	if prov := gtk.NewCSSProvider(); prov != nil {
-		prov.LoadFromData(tempScaleCSS)
-		if disp := gdk.DisplayGetDefault(); disp != nil {
-			gtk.StyleContextAddProviderForDisplay(disp, prov, gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-		}
-	}
-	pg.tempRow.Append(pg.temp)
-	// Temperature sits above Brightness so white mode mirrors colour mode's
-	// wheel-then-brightness order.
-	inner.Append(pg.tempRow)
-	inner.Append(brightRow)
+	pg.cc.Bright.AddController(brightDrag)
 
 	// Transition toggle: DP 28's change mode is boolean (0 = direct/jump,
 	// 1 = gradual/fade), so this is a two-way toggle, not a range. Jump snaps
@@ -385,7 +263,7 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	// brightness to every checked light).
 	pg.suppress = false
 
-	pg.applyModeVisibility()
+	pg.cc.ApplyModeVisibility()
 
 	// Seed each target row from its device's live state (off-thread).
 	pg.refreshTargets()
@@ -411,28 +289,19 @@ func (pg *playground) checked() []*playgroundTarget {
 	return out
 }
 
-// onModeChanged flips the shared mode, toggles control visibility, and pushes
-// the newly selected mode to every checked light.
+// onModeChanged flips the shared mode and pushes the newly selected mode to
+// every checked light (visibility is handled by the colourControls).
 func (pg *playground) onModeChanged() {
-	if pg.modeToggle.ActiveName() == "white" {
+	if pg.cc.IsWhite() {
 		pg.mode = device.ModeWhite
 	} else {
 		pg.mode = device.ModeColour
 	}
-	pg.applyModeVisibility()
 	if pg.mode == device.ModeWhite {
-		pg.setTemp(pg.temp.Value())
+		pg.setTemp(pg.cc.Temp.Value())
 	} else {
 		pg.setColour()
 	}
-}
-
-// applyModeVisibility shows the wheel for colour mode and the temp slider for
-// white mode.
-func (pg *playground) applyModeVisibility() {
-	colour := pg.mode != device.ModeWhite
-	pg.wheelRow.SetVisible(colour)
-	pg.tempRow.SetVisible(!colour)
 }
 
 // transitionValue maps the Fade switch to DP 28's change-mode flag:
@@ -463,7 +332,7 @@ func (pg *playground) mirrorChecked(fn func(*SceneState)) {
 // mirrorColour mirrors the shared colour selection (hue/sat/brightness) into
 // the checked rows.
 func (pg *playground) mirrorColour() {
-	hue, sat, bright := pg.hue, pg.sat, pg.bright.Value()
+	hue, sat, bright := pg.cc.hue, pg.cc.sat, pg.cc.Bright.Value()
 	pg.mirrorChecked(func(s *SceneState) {
 		s.Mode = device.ModeColour
 		s.Hue = hue
@@ -485,7 +354,7 @@ func (pg *playground) setPower(on bool) {
 }
 
 func (pg *playground) setColour() {
-	rgb := pg.selRGB()
+	rgb := pg.cc.SelRGB()
 	for _, t := range pg.checked() {
 		ctl := t.ctl
 		go func() {
@@ -502,7 +371,7 @@ func (pg *playground) setBrightness(v float64) {
 	// selection with the new value in one write. In white mode it is the
 	// dedicated brightness DP.
 	if pg.mode == device.ModeColour {
-		r, g, b := hsvToRGBInt(pg.hue, pg.sat, v/100.0)
+		r, g, b := hsvToRGBInt(pg.cc.hue, pg.cc.sat, v/100.0)
 		rgb := device.RGB{R: r, G: g, B: b}
 		// Brightness in colour mode is a "v" rewrite of the current colour.
 		// While the slider is being dragged we hold a live music stream open
@@ -555,19 +424,6 @@ func (pg *playground) setTemp(v float64) {
 		s.Mode = device.ModeWhite
 		s.Temp = v
 	})
-}
-
-// setSelection updates the shared hue/sat from wheel coordinates and redraws.
-// The drawing area is padded around the disc, so the pad is subtracted to get
-// disc-local coordinates.
-func (pg *playground) setSelection(x, y float64) {
-	pg.hue, pg.sat = coordsToHSSized(x-playgroundWheelPad, y-playgroundWheelPad, playgroundWheelSize)
-	pg.wheel.QueueDraw()
-}
-
-func (pg *playground) selRGB() device.RGB {
-	r, g, b := hsvToRGBInt(pg.hue, pg.sat, 1.0)
-	return device.RGB{R: r, G: g, B: b}
 }
 
 // --- per-light target rows (live state) ---
@@ -652,58 +508,5 @@ func (t *playgroundTarget) drawSwatch(_ *gtk.DrawingArea, cr *cairo.Context, wid
 	roundedRect(cr, 0.5, 0.5, w-1, h-1, 5)
 	cr.SetSourceRGBA(0, 0, 0, 0.2)
 	cr.SetLineWidth(1)
-	cr.Stroke()
-}
-
-func (pg *playground) drawWheel(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
-	size := float64(playgroundWheelSize)
-	radius := size / 2.0
-	pad := float64(playgroundWheelPad)
-	cx, cy := pad+radius, pad+radius
-
-	// Soft, antialiased disc edge: clip the raw HSV bitmap to a circle a hair
-	// inside its bounds so its hard pixel edge never shows.
-	cr.Save()
-	cr.Arc(cx, cy, radius-1.5, 0, 2*math.Pi)
-	cr.Clip()
-	cr.Translate(pad, pad)
-	scale := size / float64(wheelSize)
-	cr.Scale(scale, scale)
-	cr.SetSourceSurface(pg.app.wheelSurface, 0, 0)
-	cr.Paint()
-	cr.Restore()
-
-	// Subtle rim so the near-white centre region doesn't bleed into the card.
-	cr.Arc(cx, cy, radius-1, 0, 2*math.Pi)
-	cr.SetSourceRGBA(0, 0, 0, 0.18)
-	cr.SetLineWidth(1.5)
-	cr.Stroke()
-
-	// Hue-style thumb: a large white ring whose centre is filled with the
-	// selected hue/sat — the thumb IS the preview. Brightness is deliberately
-	// not mixed in: it is a separate control, and dimming the thumb would
-	// conflate the two. The thumb's centre rides all the way to the disc edge
-	// at full saturation; the padded drawing area keeps the overhang from
-	// being clipped.
-	const thumbR = 12.0
-	angle := pg.hue * 2 * math.Pi
-	dist := pg.sat * radius
-	sx := cx + dist*math.Cos(angle)
-	sy := cy + dist*math.Sin(angle)
-
-	r, g, b := hsvToRGBInt(pg.hue, pg.sat, 1.0)
-
-	// Drop shadow.
-	cr.Arc(sx, sy+1.5, thumbR+1, 0, 2*math.Pi)
-	cr.SetSourceRGBA(0, 0, 0, 0.30)
-	cr.Fill()
-	// Colour-filled centre (live preview).
-	cr.Arc(sx, sy, thumbR, 0, 2*math.Pi)
-	cr.SetSourceRGB(float64(r)/255, float64(g)/255, float64(b)/255)
-	cr.Fill()
-	// Thick white ring.
-	cr.Arc(sx, sy, thumbR-1.5, 0, 2*math.Pi)
-	cr.SetSourceRGBA(1, 1, 1, 0.98)
-	cr.SetLineWidth(3)
 	cr.Stroke()
 }

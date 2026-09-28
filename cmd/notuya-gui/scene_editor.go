@@ -6,7 +6,6 @@ import (
 
 	"github.com/averstraeten/notuya-go/pkg/device"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
-	"github.com/diamondburned/gotk4/pkg/cairo"
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
@@ -37,16 +36,10 @@ type sceneDeviceRow struct {
 	ctl      *control
 	deviceID string
 
-	card      *gtk.Box
-	include   *gtk.CheckButton
-	power     *gtk.Switch
-	modeCombo *adw.ToggleGroup
-	wheelRow  *gtk.Box
-	wheel     *gtk.DrawingArea
-	swatch    *gtk.DrawingArea
-	bright    *gtk.Scale
-	tempRow   *gtk.Box
-	temp      *gtk.Scale
+	card    *gtk.Box
+	include *gtk.CheckButton
+	power   *gtk.Switch
+	cc      *colourControls
 
 	st       SceneState
 	suppress bool
@@ -215,76 +208,44 @@ func (e *sceneEditor) newDeviceRow(dev Device) *sceneDeviceRow {
 	headerRow.Append(r.power)
 	inner.Append(headerRow)
 
-	// Mode selector: Color / Blanco.
-	modeRow := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	modeLabel := gtk.NewLabel("Mode")
-	modeLabel.SetWidthChars(16)
-	modeLabel.SetXAlign(0.0)
-	modeRow.Append(modeLabel)
-	r.modeCombo = newModeToggle(func(bool) {
-		if r.suppress {
-			return
-		}
-		r.onModeChanged()
+	// Shared colour controls: mode toggle, wheel (thumb = preview),
+	// temperature and brightness — the same widget set as the Lights tab.
+	r.cc = newColourControls(e.app.wheelSurface, sceneEditorWheelSize, colourCallbacks{
+		OnMode: func(bool) {
+			if r.suppress {
+				return
+			}
+			r.onModeChanged()
+		},
+		OnDragBegin: func(rgb device.RGB) {
+			r.syncHS()
+			r.ctl.BeginLiveDrag(rgb, device.DefaultTransition)
+		},
+		OnDragUpdate: func(rgb device.RGB) {
+			r.syncHS()
+			r.ctl.UpdateLiveDrag(rgb)
+		},
+		OnDragEnd: func(rgb device.RGB) {
+			r.syncHS()
+			r.ctl.UpdateLiveDrag(rgb)
+			go r.ctl.EndLiveDrag()
+		},
+		OnBright: func(v float64) {
+			if r.suppress {
+				return
+			}
+			r.st.Bright = v
+			r.previewBrightness(v)
+		},
+		OnTemp: func(v float64) {
+			if r.suppress {
+				return
+			}
+			r.st.Temp = v
+			r.previewTemp(v)
+		},
 	})
-	modeRow.Append(r.modeCombo)
-	inner.Append(modeRow)
-
-	// Colour wheel + swatch (colour mode).
-	r.wheelRow = gtk.NewBox(gtk.OrientationHorizontal, 10)
-	r.wheel = gtk.NewDrawingArea()
-	r.wheel.SetContentWidth(sceneEditorWheelSize)
-	r.wheel.SetContentHeight(sceneEditorWheelSize)
-	r.wheel.SetDrawFunc(r.drawWheel)
-	r.wheelRow.Append(r.wheel)
-
-	swatchBox := gtk.NewBox(gtk.OrientationVertical, 6)
-	swatchBox.SetVAlign(gtk.AlignCenter)
-	r.swatch = gtk.NewDrawingArea()
-	r.swatch.SetContentWidth(60)
-	r.swatch.SetContentHeight(60)
-	r.swatch.SetDrawFunc(r.drawSwatch)
-	swatchBox.Append(r.swatch)
-	r.wheelRow.Append(swatchBox)
-	inner.Append(r.wheelRow)
-
-	// Wheel drag → live preview + in-memory hue/sat.
-	drag := gtk.NewGestureDrag()
-	var startX, startY float64
-	drag.ConnectDragBegin(func(x, y float64) {
-		startX, startY = x, y
-		r.setSelection(x, y)
-		r.ctl.BeginLiveDrag(r.selRGB(), device.DefaultTransition)
-	})
-	drag.ConnectDragUpdate(func(ox, oy float64) {
-		r.setSelection(startX+ox, startY+oy)
-		r.ctl.UpdateLiveDrag(r.selRGB())
-	})
-	drag.ConnectDragEnd(func(ox, oy float64) {
-		r.setSelection(startX+ox, startY+oy)
-		r.ctl.UpdateLiveDrag(r.selRGB())
-		go r.ctl.EndLiveDrag()
-	})
-	r.wheel.AddController(drag)
-
-	// Brightness slider.
-	inner.Append(labelledScaleSimple("Brightness", &r.bright, 1, 100, func(v float64) {
-		if r.suppress {
-			return
-		}
-		r.st.Bright = v
-		r.previewBrightness(v)
-	}))
-
-	// Temperature slider (white mode).
-	r.tempRow = labelledScaleSimple("Temp (cold→warm)", &r.temp, 0, 100, func(v float64) {
-		if r.suppress {
-			return
-		}
-		r.st.Temp = v
-		r.previewTemp(v)
-	})
-	inner.Append(r.tempRow)
+	r.cc.AppendTo(inner)
 
 	r.card = card
 	return r
@@ -297,7 +258,7 @@ func (r *sceneDeviceRow) prefill(include bool, st SceneState) {
 	defer func() {
 		r.suppress = false
 		r.applySensitivity()
-		r.applyModeVisibility()
+		r.cc.ApplyModeVisibility()
 	}()
 
 	r.st = st
@@ -306,9 +267,9 @@ func (r *sceneDeviceRow) prefill(include bool, st SceneState) {
 	r.power.SetActive(st.On)
 
 	if st.Mode == device.ModeWhite {
-		r.modeCombo.SetActiveName("white")
+		r.cc.Mode.SetActiveName("white")
 	} else {
-		r.modeCombo.SetActiveName("colour")
+		r.cc.Mode.SetActiveName("colour")
 		if r.st.Mode == "" {
 			r.st.Mode = device.ModeColour
 		}
@@ -318,21 +279,19 @@ func (r *sceneDeviceRow) prefill(include bool, st SceneState) {
 	if bright < 1 {
 		bright = 1
 	}
-	r.bright.SetValue(math.Round(bright))
-	r.temp.SetValue(math.Round(st.Temp))
-	r.wheel.QueueDraw()
-	r.swatch.QueueDraw()
+	r.cc.Bright.SetValue(math.Round(bright))
+	r.cc.Temp.SetValue(math.Round(st.Temp))
+	r.cc.SetHS(st.Hue, st.Sat)
 }
 
-// onModeChanged updates st.Mode, toggles which controls are visible, and pushes
-// a live preview of the newly selected mode.
+// onModeChanged updates st.Mode (visibility is handled by colourControls) and
+// pushes a live preview of the newly selected mode.
 func (r *sceneDeviceRow) onModeChanged() {
-	if r.modeCombo.ActiveName() == "white" {
+	if r.cc.IsWhite() {
 		r.st.Mode = device.ModeWhite
 	} else {
 		r.st.Mode = device.ModeColour
 	}
-	r.applyModeVisibility()
 
 	if !r.include.Active() || !r.st.On {
 		return
@@ -344,23 +303,12 @@ func (r *sceneDeviceRow) onModeChanged() {
 	}
 }
 
-// applyModeVisibility shows the wheel for colour mode and the temp slider for
-// white mode.
-func (r *sceneDeviceRow) applyModeVisibility() {
-	colour := r.st.Mode != device.ModeWhite
-	r.wheelRow.SetVisible(colour)
-	r.tempRow.SetVisible(!colour)
-}
-
 // applySensitivity greys out the mode/colour/brightness controls when the light
 // is excluded from the scene or powered off, so no stray preview fires.
 func (r *sceneDeviceRow) applySensitivity() {
 	on := r.include.Active() && r.power.Active()
 	r.power.SetSensitive(r.include.Active())
-	r.modeCombo.SetSensitive(on)
-	r.wheelRow.SetSensitive(on)
-	r.bright.SetSensitive(on)
-	r.temp.SetSensitive(on)
+	r.cc.SetSensitive(on)
 }
 
 // --- live preview helpers (all off the GTK thread via the control) ---
@@ -375,7 +323,7 @@ func (r *sceneDeviceRow) previewPower(on bool) {
 }
 
 func (r *sceneDeviceRow) previewColour() {
-	ctl, rgb := r.ctl, r.selRGB()
+	ctl, rgb := r.ctl, r.cc.SelRGB()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 		defer cancel()
@@ -413,75 +361,11 @@ func (r *sceneDeviceRow) previewTemp(v float64) {
 	}()
 }
 
-// setSelection updates hue/sat from wheel coordinates, mirrors them into the
-// in-memory state, and redraws.
-func (r *sceneDeviceRow) setSelection(x, y float64) {
-	h, s := coordsToHSSized(x, y, sceneEditorWheelSize)
-	r.st.Hue = h
-	r.st.Sat = s
-	r.wheel.QueueDraw()
-	r.swatch.QueueDraw()
-}
-
-func (r *sceneDeviceRow) selRGB() device.RGB {
-	rr, gg, bb := hsvToRGBInt(r.st.Hue, r.st.Sat, 1.0)
-	return device.RGB{R: rr, G: gg, B: bb}
-}
-
-func (r *sceneDeviceRow) drawWheel(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
-	scale := float64(sceneEditorWheelSize) / float64(wheelSize)
-	cr.Save()
-	cr.Scale(scale, scale)
-	cr.SetSourceSurface(r.editor.app.wheelSurface, 0, 0)
-	cr.Paint()
-	cr.Restore()
-
-	radius := float64(sceneEditorWheelSize) / 2.0
-	angle := r.st.Hue * 2 * math.Pi
-	dist := r.st.Sat * radius
-	sx := radius + dist*math.Cos(angle)
-	sy := radius + dist*math.Sin(angle)
-
-	cr.Arc(sx, sy, 7, 0, 2*math.Pi)
-	cr.SetSourceRGBA(0, 0, 0, 0.7)
-	cr.SetLineWidth(2.5)
-	cr.Stroke()
-	cr.Arc(sx, sy, 5, 0, 2*math.Pi)
-	cr.SetSourceRGBA(1, 1, 1, 0.95)
-	cr.SetLineWidth(2)
-	cr.Stroke()
-}
-
-func (r *sceneDeviceRow) drawSwatch(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
-	rr, gg, bb := hsvToRGBInt(r.st.Hue, r.st.Sat, 1.0)
-	w, h := float64(width), float64(height)
-	roundedRect(cr, 0, 0, w, h, 8)
-	cr.SetSourceRGB(float64(rr)/255, float64(gg)/255, float64(bb)/255)
-	cr.Fill()
-	roundedRect(cr, 0.5, 0.5, w-1, h-1, 8)
-	cr.SetSourceRGBA(0, 0, 0, 0.15)
-	cr.SetLineWidth(1)
-	cr.Stroke()
-}
-
-// labelledScaleSimple builds a "label + horizontal scale" row and stores the
-// scale in *dst. Unlike labelledScale it has no devicePanel dependency; the
-// caller's onChange guards against programmatic changes itself.
-func labelledScaleSimple(label string, dst **gtk.Scale, min, max float64, onChange func(float64)) *gtk.Box {
-	row := gtk.NewBox(gtk.OrientationHorizontal, 8)
-	lbl := gtk.NewLabel(label)
-	lbl.SetWidthChars(16)
-	lbl.SetXAlign(0.0)
-	row.Append(lbl)
-	scale := gtk.NewScaleWithRange(gtk.OrientationHorizontal, min, max, 1)
-	scale.SetHExpand(true)
-	scale.SetDrawValue(true)
-	scale.SetRoundDigits(0)
-	scale.ConnectValueChanged(func() { onChange(scale.Value()) })
-	disableScaleScroll(scale)
-	row.Append(scale)
-	*dst = scale
-	return row
+// syncHS mirrors the shared widget's wheel selection into the in-memory
+// scene state so Save persists what was previewed.
+func (r *sceneDeviceRow) syncHS() {
+	r.st.Hue = r.cc.hue
+	r.st.Sat = r.cc.sat
 }
 
 // newModeToggle builds an AdwToggleGroup with two icon+label toggles —
@@ -556,13 +440,13 @@ func (e *sceneEditor) save() {
 		if st.On {
 			if r.st.Mode == device.ModeWhite {
 				st.Mode = device.ModeWhite
-				st.Temp = r.temp.Value()
-				st.Bright = r.bright.Value()
+				st.Temp = r.cc.Temp.Value()
+				st.Bright = r.cc.Bright.Value()
 			} else {
 				st.Mode = device.ModeColour
 				st.Hue = r.st.Hue
 				st.Sat = r.st.Sat
-				st.Bright = r.bright.Value()
+				st.Bright = r.cc.Bright.Value()
 			}
 		}
 		scene.States = append(scene.States, st)

@@ -292,6 +292,7 @@ def _pid_alive(pid):
 
 CAGE_MARKER = "/tmp/notuya-gui.uitest.cage-shoot"
 CAGE_SIZE = "800x1100"
+CAGE_SETTLE = 6.0  # seconds: covers a bulb command plus the read-back repaint
 
 
 def cmd_cage(_app, args):
@@ -343,10 +344,15 @@ def cmd_cage(_app, args):
             if n is None:
                 print(f"cage: widget not found: {name!r}", file=sys.stderr)
             else:
+                before = flags(n)
                 Atspi.Action.do_action(n, 0)
                 time.sleep(0.4)
-                print(f"clicked {name!r} -> [{','.join(flags(n))}]")
-        time.sleep(0.6)  # settle before the grab
+                after = flags(n)
+                note = "" if before != after else "  (UNCHANGED)"
+                print(f"clicked {name!r} -> [{','.join(after)}]{note}")
+        # Commands talk to real bulbs and repaint from the reply, so the grab
+        # has to outwait a device round-trip, not just a frame.
+        time.sleep(CAGE_SETTLE)
         open(CAGE_MARKER, "w").close()
         out, _ = cage.communicate(timeout=20)
     except subprocess.TimeoutExpired:
@@ -363,6 +369,15 @@ def cmd_cage(_app, args):
             os.remove(CAGE_MARKER)
         except OSError:
             pass
+    # The app's own stderr is the only place device errors surface; a silent
+    # capture that looks fine is exactly how a failing command hides.
+    try:
+        with open(LOGFILE) as f:
+            app_log = [l for l in f.read().splitlines() if "notuya-gui:" in l]
+        for line in app_log[-10:]:
+            print(f"app: {line}")
+    except OSError:
+        pass
     if "GRIM_OK" not in (out or "") or not os.path.exists(path):
         print("cage: capture failed (no GRIM_OK / missing file)", file=sys.stderr)
         return 1

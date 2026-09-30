@@ -29,11 +29,29 @@ func main() {
 	}
 
 	cfg, err := loadConfig(configPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintln(os.Stderr, "notuya-gui:", err)
+		os.Exit(1)
+	}
+
+	if (err != nil || len(cfg.Devices) == 0) && !*pickerMode {
+		code, applied := runWizard(configPath)
+		if !applied {
+			os.Exit(code)
+		}
+		// Setup finished: load the config the wizard just wrote and start
+		// the app at top level (not nested inside the wizard's GApplication).
+		cfg, err = loadConfig(configPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "notuya-gui:", err)
+			os.Exit(1)
+		}
+		runApp(configPath, cfg)
+		return
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "notuya-gui:", err)
-		if errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintln(os.Stderr, "hint: run `notuya-gui -config` to add devices and discover bulbs.")
-		}
+		fmt.Fprintln(os.Stderr, "hint: run `notuya-gui -config` to add devices and discover bulbs.")
 		os.Exit(1)
 	}
 

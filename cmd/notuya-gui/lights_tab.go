@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/device"
@@ -463,4 +464,14 @@ func (t *lightTarget) drawSwatch(_ *gtk.DrawingArea, cr *cairo.Context, width, h
 	cr.SetSourceRGBA(0, 0, 0, 0.2)
 	cr.SetLineWidth(1)
 	cr.Stroke()
+}
+
+// roundedRect traces a rounded rectangle path onto cr.
+func roundedRect(cr *cairo.Context, x, y, w, h, r float64) {
+	cr.NewSubPath()
+	cr.Arc(x+w-r, y+r, r, -math.Pi/2, 0)
+	cr.Arc(x+w-r, y+h-r, r, 0, math.Pi/2)
+	cr.Arc(x+r, y+h-r, r, math.Pi/2, math.Pi)
+	cr.Arc(x+r, y+r, r, math.Pi, 3*math.Pi/2)
+	cr.ClosePath()
 }

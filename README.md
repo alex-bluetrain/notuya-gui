@@ -22,21 +22,19 @@ keep running.
 - **Rooms and scenes** — organise lights into rooms and save named colour
   snapshots you can apply to a group in one click.
 - **LAN discovery** — find bulbs on your network from the app; keys stay local.
-- **Full-screen picker** — a Wayland layer-shell overlay for setting every bulb
-  to one colour at once.
 - **Native GNOME interface** — built with GTK4 and libadwaita, not a web view.
 
 ## Requirements
 
 - Go 1.27 or newer and a C toolchain (the GUI links GTK4 through cgo)
-- GTK4, gtk4-layer-shell, and libadwaita, discoverable via `pkg-config`
+- GTK4 and libadwaita, discoverable via `pkg-config`
 - Linux with Wayland
 
 ## Installation
 
 ```bash
 # System dependencies (Arch / Omarchy package names)
-sudo pacman -S gtk4 gtk4-layer-shell libadwaita base-devel
+sudo pacman -S gtk4 libadwaita base-devel
 
 # Build and install into ~/.local/bin
 make build
@@ -50,7 +48,6 @@ builds are fast.
 
 ```bash
 notuya-gui              # desktop app
-notuya-gui --picker     # full-screen colour-wheel overlay
 ```
 
 On first launch with no configuration, a setup wizard scans the LAN, lists the
@@ -61,10 +58,7 @@ The desktop app has three tabs:
 - **Lights** — per-device power, colour wheel, and brightness / colour-temperature
   sliders.
 - **Scenes** — apply, edit, or delete named colour snapshots.
-- **Settings** — add, edit, remove, and discover bulbs on the LAN.
-
-The picker is a keyboard-driven overlay: drag the wheel to colour every
-configured bulb, **Enter** to keep the colour, **Escape** to revert.
+- **Settings** — discover bulbs on the LAN and enter their keys.
 
 Discovery reports each bulb's device ID and IP address, but not its local key.
 That key comes from Tuya's cloud, so you enter it by hand once; it is stored
@@ -103,12 +97,9 @@ make check    # go vet + go test
 <summary>Why this binary links C, while the library does not</summary>
 
 `notuya-go` is built with `CGO_ENABLED=0` and no external dependencies. This
-module deliberately breaks both, and only in the final binary, because a true
-always-on-top overlay on Wayland requires the `wlr-layer-shell` protocol, which
-the pure-Go GUI toolkits do not expose. Reaching a real layer-shell surface from
-Go means GTK4 through the `gotk4` and `gotk4-layer-shell` bindings, which are
-cgo-only; the desktop app also uses libadwaita via `gotk4-adwaita`. The
-`notuya-go` packages it imports remain cgo-free.
+module deliberately breaks both, and only in the final binary: the native GTK4 +
+libadwaita interface needs the `gotk4` and `gotk4-adwaita` bindings, which are
+cgo-only. The `notuya-go` packages it imports remain cgo-free.
 
 </details>
 
@@ -131,6 +122,3 @@ touches DP numbers or wire framing. It builds a `*bulb.Bulb` per device and feed
 command uses.
 
 </details>
-
-The pkg-config module for the layer-shell library is `gtk4-layer-shell-0`, not
-`gtk4-layer-shell`.

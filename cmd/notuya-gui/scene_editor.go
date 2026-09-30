@@ -18,8 +18,8 @@ const sceneEditorWheelSize = 180
 // preview: moving a wheel or slider drives the real bulb (via the shared
 // control), and each change is also written into the in-memory SceneState so
 // Save persists exactly what was previewed. The preview is destructive —
-// closing the dialog leaves the lights at their last previewed value, matching
-// the picker and the Lights tab.
+// closing the dialog leaves the lights at their last previewed value, like the
+// Lights tab.
 type sceneEditor struct {
 	app    *desktopApp
 	index  int // -1 = new scene, >=0 = edit existing

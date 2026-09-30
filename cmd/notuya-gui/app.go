@@ -18,10 +18,9 @@ import (
 // Its code stays compiled (not commented out) so it cannot silently rot.
 const roomsTabEnabled = false
 
-// desktopApp is the default entry point: an ordinary libadwaita toplevel (an
-// xdg-toplevel, not a layer-shell overlay) with Scenes, Lights and Settings
-// tabs. It owns one control (persistent session) per device for the window's
-// lifetime and closes them all on exit.
+// desktopApp is the default entry point: a libadwaita toplevel with Scenes,
+// Lights and Settings tabs. It owns one control (persistent session) per device
+// for the window's lifetime and closes them all on exit.
 type desktopApp struct {
 	app          *adw.Application
 	window       *adw.ApplicationWindow

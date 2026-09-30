@@ -28,9 +28,8 @@ type deviceStatus struct {
 
 // control owns one persistent protocol35 session for a single device and
 // serializes every command behind a mutex, since a session is not
-// concurrency-safe. Unlike the picker's streamer (one lifelong music-mode
-// stream), the app mostly issues discrete waited commands over this session
-// and only borrows music mode during a live colour drag.
+// concurrency-safe. The app issues discrete waited commands over this session
+// and only borrows music mode (the streamer) during a live colour drag.
 type control struct {
 	dev Device
 

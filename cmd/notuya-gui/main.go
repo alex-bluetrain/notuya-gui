@@ -2,15 +2,11 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 )
 
 func main() {
-	pickerMode := flag.Bool("picker", false, "open the layer-shell colour-wheel overlay instead of the desktop app")
-	flag.Parse()
-
 	configPath := resolveConfigPath()
 
 	cfg, err := loadConfig(configPath)
@@ -19,7 +15,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if (err != nil || len(cfg.Devices) == 0) && !*pickerMode {
+	if err != nil || len(cfg.Devices) == 0 {
 		code, applied := runWizard(configPath)
 		if !applied {
 			os.Exit(code)
@@ -31,17 +27,6 @@ func main() {
 			fmt.Fprintln(os.Stderr, "notuya-gui:", err)
 			os.Exit(1)
 		}
-		runApp(configPath, cfg)
-		return
-	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "notuya-gui:", err)
-		os.Exit(1)
-	}
-
-	if *pickerMode {
-		runPicker(configPath, cfg)
-		return
 	}
 
 	runApp(configPath, cfg)

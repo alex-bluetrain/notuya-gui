@@ -369,8 +369,7 @@ func disableScaleScroll(scale *gtk.Scale) {
 }
 
 // coordsToHSSized maps a point in a colour wheel of the given diameter to
-// (hue, saturation), so the picker overlay and every colourControls wheel
-// share one mapping.
+// (hue, saturation), so every colourControls wheel shares one mapping.
 func coordsToHSSized(x, y, size float64) (h, s float64) {
 	radius := size / 2.0
 	dx := x - radius

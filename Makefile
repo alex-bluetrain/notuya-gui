@@ -2,7 +2,7 @@ BINARY  := notuya-gui
 PKG     := ./cmd/notuya-gui
 BINDIR  := $(HOME)/.local/bin
 
-# GTK4 + gtk4-layer-shell require CGO and the system GTK4 stack.
+# GTK4 + libadwaita require CGO and the system GTK4 stack.
 export CGO_ENABLED := 1
 
 .PHONY: build run test vet check clean deps install uninstall
@@ -10,7 +10,7 @@ export CGO_ENABLED := 1
 build: ## Build the GUI binary (CGO + GTK4)
 	go build -o $(BINARY) $(PKG)
 
-run: build ## Build and launch the picker
+run: build ## Build and launch the app
 	./$(BINARY)
 
 test: ## Run unit tests (pure-Go modules)
@@ -22,8 +22,8 @@ vet: ## Static analysis
 check: vet test ## Vet + test
 
 deps: ## Verify GTK4 toolchain is present
-	@pkg-config --exists gtk4 gtk4-layer-shell-0 libadwaita-1 && echo "toolchain ok" \
-		|| { echo "missing gtk4 / gtk4-layer-shell-0 / libadwaita-1 (install gtk4, gtk4-layer-shell, libadwaita)"; exit 1; }
+	@pkg-config --exists gtk4 libadwaita-1 && echo "toolchain ok" \
+		|| { echo "missing gtk4 / libadwaita-1 (install gtk4, libadwaita)"; exit 1; }
 
 install: build ## Copy the built binary into ~/.local/bin (overwrites existing)
 	@mkdir -p $(BINDIR)

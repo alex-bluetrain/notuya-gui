@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -247,6 +248,25 @@ func TestSaveConfigRoundTripsScenesAndCoOwnedKeys(t *testing.T) {
 	}
 	if got[1].On || got[1].DeviceID != "b" {
 		t.Errorf("off-state not persisted: %+v", got[1])
+	}
+}
+
+func TestSaveConfigDoesNotEscapeHTMLInKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	key := "c{J)1t6y/om!M>gP"
+	devices := []Device{{DeviceID: "a", IPAddress: "10.0.0.1", LocalKey: key, Name: "A"}}
+	if err := saveConfig(path, devices, nil, nil); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `\u003e`) {
+		t.Errorf("config.json escapes '>' as \\u003e:\n%s", data)
+	}
+	if !strings.Contains(string(data), key) {
+		t.Errorf("config.json does not contain the literal key %q:\n%s", key, data)
 	}
 }
 

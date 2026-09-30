@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/alex-bluetrain/notuya-go/pkg/device"
 	"github.com/alex-bluetrain/notuya-go/pkg/discovery"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
@@ -30,9 +33,12 @@ func wizardDeviceName(i int) string {
 	return fmt.Sprintf("Light %d", i+1)
 }
 
-// keyComplete reports whether a Local Key field holds a complete key.
+// keyComplete reports whether a Local Key field holds enough to test. Local
+// keys are usually 16 characters but that isn't guaranteed, so the Test button
+// gates on "something was typed", not an exact length — the real validation is
+// the live connection in runWizardTest, where a wrong key fails to connect.
 func keyComplete(key string) bool {
-	return len(key) == localKeyLen
+	return len(strings.TrimSpace(key)) > 0
 }
 
 // foundLightsTitle is the boxed-list title for n discovered devices.
@@ -91,6 +97,8 @@ type wizardRow struct {
 	testBtn    *gtk.Button
 	statusSpin *gtk.Spinner
 
+	ctl *control // persistent session for this device, reused across tests
+
 	tested   bool // the device answered a full test sequence successfully
 	inFlight bool // a test is currently running for this row
 }
@@ -118,9 +126,25 @@ func (w *wizard) activate() {
 	w.toolbar.SetRevealBottomBars(false)
 
 	window.SetContent(w.toolbar)
+	window.ConnectCloseRequest(func() bool {
+		w.closeControls()
+		return false
+	})
 	window.Present()
 
 	w.scan()
+}
+
+// closeControls shuts every per-row session down when the wizard exits. Each
+// device's control is opened lazily on first test and reused across tests; this
+// releases them all in one place, on close, rather than per test.
+func (w *wizard) closeControls() {
+	for _, r := range w.rows {
+		if r.ctl != nil {
+			r.ctl.Close()
+			r.ctl = nil
+		}
+	}
 }
 
 // buildScanningPage shows a spinner while the LAN scan runs.
@@ -223,6 +247,10 @@ func (w *wizard) scan() {
 // cards from a previous scan so rescanning never leaves stale rows behind.
 func (w *wizard) showResults(devs []discovery.Device) {
 	for _, r := range w.rows {
+		if r.ctl != nil {
+			r.ctl.Close()
+			r.ctl = nil
+		}
 		w.deviceList.Remove(r.row)
 	}
 	w.rows = w.rows[:0]
@@ -260,7 +288,8 @@ func (w *wizard) buildDeviceCard(i int, d discovery.Device) *adw.ActionRow {
 	row.keyEntry = gtk.NewPasswordEntry()
 	row.keyEntry.SetShowPeekIcon(true)
 	row.keyEntry.SetVAlign(gtk.AlignCenter)
-	row.keyEntry.SetWidthChars(18)
+	row.keyEntry.SetWidthChars(24)
+	row.keyEntry.SetMaxWidthChars(24)
 	row.keyEntry.SetObjectProperty("placeholder-text", "Local key")
 	row.keyEntry.SetTooltipText("Local key (16 characters)")
 	row.keyEntry.ConnectChanged(func() { w.onKeyChanged(row) })
@@ -341,15 +370,25 @@ func (w *wizard) testRow(row *wizardRow) {
 	row.keyEntry.SetSensitive(false)
 	row.keyEntry.SetTooltipText("Local key (16 characters)")
 
-	d := Device{
-		DeviceID:  row.dev.ID,
-		IPAddress: row.dev.IP,
-		LocalKey:  row.keyEntry.Text(),
-		Name:      row.name,
+	// Reuse this row's persistent control, recreating it if the key changed
+	// since the last test. Like every other view in the app, one long-lived
+	// session per device issues discrete waited commands — never a burst of
+	// writes on a throwaway session, which is what left the bulb wedged.
+	rawKey := row.keyEntry.Text()
+	d := deviceFrom(row.dev, row.name, rawKey)
+	if row.ctl == nil || row.ctl.dev.LocalKey != d.LocalKey {
+		if row.ctl != nil {
+			row.ctl.Close()
+		}
+		row.ctl = newControl(d)
 	}
+	ctl := row.ctl
 
 	go func() {
-		err := runWizardTest(d)
+		err := runWizardTest(ctl)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "notuya-gui: wizard test %s (%s) failed: %v\n", row.name, ctl.dev.IPAddress, err)
+		}
 		coreglib.IdleAdd(func() {
 			row.inFlight = false
 			row.statusSpin.Stop()
@@ -370,31 +409,31 @@ func (w *wizard) testRow(row *wizardRow) {
 	}()
 }
 
-// wizardFlashHold is the extra pause between flash steps. Kept tiny because
-// each step is already a network round trip; with the six steps below the whole
-// blink lands in roughly 200ms.
-const wizardFlashHold = 15 * time.Millisecond
+// wizardFlashHold is the pause between blink colours. Six steps at ~166ms each
+// land the whole red↔blue flash in roughly 1 second — comfortably above the
+// streamer's ~40ms throttle, so every pulse is shown, not coalesced away.
+const wizardFlashHold = 166 * time.Millisecond
 
-// wizardFlashSteps is the white-brightness blink: three dark→full pulses. Each
-// value is a percentage written straight to the white-mode brightness DP, so
-// the bulb snaps between dark and full white with no transition. The run ends
-// on 100 so the bulb is left on in bright white after the test.
-var wizardFlashSteps = []float64{0, 100, 0, 100, 0, 100}
+// wizardFlashColours is the blink sequence: red and blue alternating, three
+// times. Pushed through the live-drag streamer with transition 0 they snap with
+// no fade — the same immediate-colour path the colour wheel drag uses.
+var wizardFlashColours = []device.RGB{
+	{R: 255, G: 0, B: 0}, // red
+	{R: 0, G: 0, B: 255}, // blue
+	{R: 255, G: 0, B: 0}, // red
+	{R: 0, G: 0, B: 255}, // blue
+	{R: 255, G: 0, B: 0}, // red
+	{R: 0, G: 0, B: 255}, // blue
+}
 
-// runWizardTest proves a bulb answers on its local key by blinking it white,
+// runWizardTest proves a bulb answers on its local key by blinking it red↔blue,
 // and leaves it on afterwards.
 //
-// It opens one command session and snaps the white-mode brightness between dark
-// and full three times — each step a discrete, instantaneous write, so the bulb
-// blinks white rather than fading, in about 200ms total. The first write also
-// proves the key: a bad key or wrong IP fails to connect and fails the test.
-// The bulb is left on at full white brightness.
-func runWizardTest(d Device) error {
-	ctl := newControl(d)
-	defer ctl.Close()
-
-	// Power on first so an off bulb still flashes. If this fails the key is
-	// wrong or the bulb is unreachable — the test fails.
+// It uses the same immediate-colour path as the colour wheel drag: open the
+// live-drag streamer with transition 0 (no fade), push each colour through it,
+// then close it (which leaves the last colour set). Power on first — this also
+// proves the key, since a bad key or wrong IP fails to connect here.
+func runWizardTest(ctl *control) error {
 	powCtx, cancel := context.WithTimeout(context.Background(), wizardTestTimeout)
 	err := ctl.SetPower(powCtx, true)
 	cancel()
@@ -402,16 +441,14 @@ func runWizardTest(d Device) error {
 		return err
 	}
 
-	// Blink white brightness dark↔full. Each write is instantaneous.
-	for _, pct := range wizardFlashSteps {
-		stepCtx, cancel := context.WithTimeout(context.Background(), wizardTestTimeout)
-		err := ctl.SetWhiteBrightness(stepCtx, pct)
-		cancel()
-		if err != nil {
-			return err
-		}
+	// Immediate colour changes, no fade — transition 0 through the streamer,
+	// exactly like a colour wheel drag.
+	ctl.BeginLiveDrag(wizardFlashColours[0], 0)
+	for _, rgb := range wizardFlashColours {
+		ctl.UpdateLiveDrag(rgb)
 		time.Sleep(wizardFlashHold)
 	}
+	ctl.EndLiveDrag()
 	return nil
 }
 
@@ -442,9 +479,24 @@ func deviceFrom(d discovery.Device, name, key string) Device {
 	return Device{
 		DeviceID:  d.ID,
 		IPAddress: d.IP,
-		LocalKey:  key,
+		LocalKey:  normalizeKey(key),
 		Name:      name,
 	}
+}
+
+// normalizeKey turns a pasted local key into the raw 16 bytes the cipher needs.
+// A key copied straight out of the JSON config carries literal escape sequences
+// (e.g. `\u003e` for `>`); unquote them back to the real character. Falls back to
+// a plain trim when the string has no escapes to decode.
+func normalizeKey(key string) string {
+	k := strings.TrimSpace(key)
+	if !strings.Contains(k, `\`) {
+		return k
+	}
+	if unq, err := strconv.Unquote(`"` + k + `"`); err == nil {
+		return unq
+	}
+	return k
 }
 
 // apply writes the tested devices to config.json, closes the wizard window,

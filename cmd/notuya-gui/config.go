@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -166,7 +167,7 @@ func saveConfig(path string, devices []Device, rooms []Room, scenes []Scene) err
 	if devices == nil {
 		devices = []Device{}
 	}
-	devicesJSON, err := json.Marshal(devices)
+	devicesJSON, err := marshalNoEscape(devices)
 	if err != nil {
 		return fmt.Errorf("config: encoding devices: %w", err)
 	}
@@ -175,7 +176,7 @@ func saveConfig(path string, devices []Device, rooms []Room, scenes []Scene) err
 	if rooms == nil {
 		rooms = []Room{}
 	}
-	roomsJSON, err := json.Marshal(rooms)
+	roomsJSON, err := marshalNoEscape(rooms)
 	if err != nil {
 		return fmt.Errorf("config: encoding rooms: %w", err)
 	}
@@ -184,14 +185,17 @@ func saveConfig(path string, devices []Device, rooms []Room, scenes []Scene) err
 	if scenes == nil {
 		scenes = []Scene{}
 	}
-	scenesJSON, err := json.Marshal(scenes)
+	scenesJSON, err := marshalNoEscape(scenes)
 	if err != nil {
 		return fmt.Errorf("config: encoding scenes: %w", err)
 	}
 	root["scenes"] = scenesJSON
 
-	out, err := json.MarshalIndent(root, "", "  ")
+	out, err := marshalNoEscape(root)
 	if err != nil {
+		return fmt.Errorf("config: encoding %s: %w", path, err)
+	}
+	if out, err = indentJSON(out); err != nil {
 		return fmt.Errorf("config: encoding %s: %w", path, err)
 	}
 
@@ -209,6 +213,28 @@ func saveConfig(path string, devices []Device, rooms []Room, scenes []Scene) err
 		return fmt.Errorf("config: replacing %s: %w", path, err)
 	}
 	return nil
+}
+
+// marshalNoEscape is json.Marshal without HTML escaping: local keys are raw
+// AES bytes that may contain '<', '>' or '&', and escaping them as \uXXXX
+// makes a key copied out of the file 21 characters instead of 16.
+func marshalNoEscape(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+func indentJSON(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, data, "", "  "); err != nil {
+		return nil, err
+	}
+	buf.WriteByte('\n')
+	return buf.Bytes(), nil
 }
 
 // readLastColor returns the cached last-applied colour (hex, no '#'), or the

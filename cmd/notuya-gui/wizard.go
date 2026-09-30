@@ -372,11 +372,20 @@ func (w *wizard) testRow(row *wizardRow) {
 	}()
 }
 
-// wizardFlashHold is how long each colour of the test flash is held. Kept
-// short so the whole red→blue→white flash lands in under a second, a snappy
-// blink rather than the slow one-command-per-colour march that discrete writes
-// would give.
-const wizardFlashHold = 250 * time.Millisecond
+// wizardFlashHold is how long each colour of the test flash is shown. Kept at
+// ~50ms so a run of several colours reads as a rapid blink (total ~200ms), not
+// a slow colour walk. It sits just above the streamer's ~40ms throttle so every
+// colour still lands.
+const wizardFlashHold = 50 * time.Millisecond
+
+// wizardFlashColours is the rapid blink sequence, chosen to strobe through
+// distinct hues so the answering bulb is unmistakable at speed.
+var wizardFlashColours = []device.RGB{
+	{R: 255, G: 0, B: 0},     // red
+	{R: 0, G: 0, B: 255},     // blue
+	{R: 255, G: 255, B: 255}, // white
+	{R: 255, G: 0, B: 0},     // red again — a second pulse reads as a blink
+}
 
 // runWizardTest proves a bulb answers on its local key by flashing it, and
 // leaves it usable afterwards — never off, never on a colour the user didn't
@@ -384,13 +393,12 @@ const wizardFlashHold = 250 * time.Millisecond
 //
 // The flash runs in music mode (the same streaming path the picker and live
 // drag use): one session stays open and colours are pushed with a zero-length
-// transition, so red→blue→white blinks fast (< 1s) instead of the multi-second
-// crawl a command-per-colour sequence produces. The bulb's pre-test state is
-// snapshotted first over a brief command session and restored as the final
-// streamed colour; closing the streamer re-issues that colour as a normal
-// write, leaving music mode cleanly. If the snapshot can't be read the bulb is
-// left on in white. Any failure to open the session (bad key, wrong IP) fails
-// the test.
+// transition, so the bulb strobes through wizardFlashColours in ~200ms instead
+// of the multi-second crawl a command-per-colour sequence produces. The bulb's
+// pre-test state is snapshotted first over a brief command session and restored
+// afterwards; closing the streamer leaves music mode cleanly. If the snapshot
+// can't be read the bulb is left on in white. Any failure to open the session
+// (bad key, wrong IP) fails the test.
 func runWizardTest(d Device) error {
 	// Snapshot the current state over a short-lived command session, then
 	// close it so the bulb has no session open when the streamer connects
@@ -413,18 +421,16 @@ func runWizardTest(d Device) error {
 		}
 	}
 
-	red := device.RGB{R: 255, G: 0, B: 0}
-	blue := device.RGB{R: 0, G: 0, B: 255}
-	white := device.RGB{R: 255, G: 255, B: 255}
-
 	// Instant cuts between flash colours: no fade.
 	instant := 0
-	str := newStreamer([]Device{d}, red, bulb.StreamOptions{Transition: &instant})
+	str := newStreamer([]Device{d}, wizardFlashColours[0], bulb.StreamOptions{Transition: &instant})
 
-	// Make sure the bulb is on for the flash even if it was off.
+	// Make sure the bulb is on for the flash even if it was off, then strobe
+	// through the remaining colours. The seed colour is already showing, so
+	// hold it once before pushing the rest.
 	str.SetPower(true)
 	time.Sleep(wizardFlashHold)
-	for _, c := range []device.RGB{blue, white} {
+	for _, c := range wizardFlashColours[1:] {
 		str.Set(c, &instant)
 		time.Sleep(wizardFlashHold)
 	}

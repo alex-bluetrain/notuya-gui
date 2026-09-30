@@ -1,123 +1,91 @@
 # notuya-gui
 
-A native desktop controller for Tuya smart bulbs. Everything runs over your
-local network — no cloud account, no vendor app, no background daemon.
+**Control your Tuya smart bulbs from the Linux desktop — locally, with no cloud
+and no vendor app.**
 
 ![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%2F%20Wayland-333)
 ![GTK4](https://img.shields.io/badge/GTK4-libadwaita-4A86CF)
 
-## Overview
 
-notuya-gui speaks the Tuya v3.5 protocol directly on the LAN. It is a single Go
-binary that imports the [`notuya-go`](https://github.com/alex-bluetrain/notuya-go)
-library and drives each bulb in-process, so there is nothing else to install or
-keep running.
+notuya-gui is a native GTK4 / libadwaita app that talks to your bulbs directly
+over the local network. Commands go straight from your desktop to the bulb, so
+the lights respond instantly and keep working when the internet — or Tuya's
+servers — don't.
 
 ## Features
 
-- **Colour and brightness control** — a colour wheel plus brightness and
-  colour-temperature sliders, per light. Dragging the wheel updates the bulb in
-  real time.
-- **Rooms and scenes** — organise lights into rooms and save named colour
-  snapshots you can apply to a group in one click.
-- **LAN discovery** — find bulbs on your network from the app; keys stay local.
-- **Native GNOME interface** — built with GTK4 and libadwaita, not a web view.
+- **Live colour control.** Drag the colour wheel and the bulbs follow in real
+  time. Switch to white mode for colour temperature, and choose between smooth
+  fades and instant changes.
+- **Rooms.** Group lights by room and control a whole room, or several, at once.
+- **Scenes.** Save a look — colour, brightness and power per light — and apply
+  it with one click.
+- **Guided setup.** A first-run wizard finds bulbs on your network and lets you
+  test each one before saving.
+- **Local and private.** Nothing is sent to the cloud; device keys stay on your
+  machine.
+- **Native.** A single binary with a GNOME-style interface — no web view, no
+  background service.
 
-## Requirements
+## Compatibility
 
-- Go 1.27 or newer and a C toolchain (the GUI links GTK4 through cgo)
-- GTK4 and libadwaita, discoverable via `pkg-config`
-- Linux with Wayland
+notuya-gui supports Wi-Fi bulbs that use **Tuya local protocol v3.5**, sold
+under many brand names and controlled through the Tuya Smart or Smart Life
+apps. Your computer must be on the same network as the bulbs.
 
 ## Installation
 
-```bash
-# System dependencies (Arch / Omarchy package names)
-sudo pacman -S gtk4 libadwaita base-devel
+Requires Linux (Wayland), GTK 4, libadwaita, Go 1.27+ and a C compiler.
 
-# Build and install into ~/.local/bin
-make build
-make install
+```bash
+# Arch Linux / Omarchy
+sudo pacman -S --needed go gtk4 libadwaita base-devel
+
+git clone https://github.com/alex-bluetrain/notuya-gui.git
+cd notuya-gui
+make install    # builds and installs to ~/.local/bin/notuya-gui
 ```
 
-The first GTK4-linked build is slow because the C link step dominates; later
+The first build takes a few minutes while the GTK bindings compile; later
 builds are fast.
 
-## Usage
+## Getting started
 
-```bash
-notuya-gui              # desktop app
-```
+1. **Launch** `notuya-gui`. On first run, a setup wizard scans your network and
+   lists the bulbs it finds.
+2. **Enter each bulb's local key.** Tuya bulbs encrypt local traffic with a
+   per-device key that is only available from your Tuya account. The
+   [tinytuya setup guide](https://github.com/jasonacox/tinytuya#setup-wizard---getting-local-keys)
+   explains how to retrieve it. You only need to do this once per bulb.
+3. **Test and apply.** *Test* briefly flashes the bulb so you know which is
+   which; *Apply* saves your setup.
 
-On first launch with no configuration, a setup wizard scans the LAN, lists the
-bulbs it finds, and walks you through pasting each one's local key.
+After that, use **Lights** for everyday control, **Scenes** to save and recall
+looks, and **Settings** to add bulbs or update keys.
 
-The desktop app has three tabs:
+## Troubleshooting
 
-- **Lights** — per-device power, colour wheel, and brightness / colour-temperature
-  sliders.
-- **Scenes** — apply, edit, or delete named colour snapshots.
-- **Settings** — discover bulbs on the LAN and enter their keys.
-
-Discovery reports each bulb's device ID and IP address, but not its local key.
-That key comes from Tuya's cloud, so you enter it by hand once; it is stored
-locally and never leaves your machine.
-
-## Configuration
-
-Configuration lives at `~/.config/notuya-gui/config.json` (override with
-`$NOTUYA_CONFIG`). Devices and rooms are top-level entities, so the app resolves
-the lights in a room from the file alone, without querying a bulb:
-
-```json
-{
-  "devices": [
-    { "device_id": "ebfake1111111111111111", "ip_address": "192.0.2.10", "local_key": "fake-local-key16", "name": "Desk Lamp" }
-  ],
-  "rooms": [
-    { "name": "Living Room", "devices": ["ebfake1111111111111111"] }
-  ]
-}
-```
-
-A device in no room appears under a synthetic "No room" group; a room pointing
-at a missing device is ignored. Writes are atomic and preserve any keys this
-tool does not model.
+- **No bulbs found.** Make sure the computer and bulbs are on the same network
+  and subnet, and that your firewall allows incoming UDP on ports 6667 and
+  7000.
+- **Test fails.** Double-check the local key. Keys change whenever a bulb is
+  re-paired in the Tuya app, so fetch it again after re-pairing.
 
 ## Development
 
 ```bash
+make build    # build ./notuya-gui
 make check    # go vet + go test
 ```
 
-## Design notes
-
-<details>
-<summary>Why this binary links C, while the library does not</summary>
-
-`notuya-go` is built with `CGO_ENABLED=0` and no external dependencies. This
-module deliberately breaks both, and only in the final binary: the native GTK4 +
-libadwaita interface needs the `gotk4` and `gotk4-adwaita` bindings, which are
-cgo-only. The `notuya-go` packages it imports remain cgo-free.
-
-</details>
-
-<details>
-<summary>Relationship to notuya-go</summary>
-
-This is a separate Go module that depends on the published
-`github.com/alex-bluetrain/notuya-go`. To build against a local checkout, use a
-`go.work` file (gitignored, so it stays local) rather than a `replace` directive
-in `go.mod`, which would affect everyone consuming this module:
+The Tuya protocol itself is implemented in
+[notuya-go](https://github.com/alex-bluetrain/notuya-go), a separate
+dependency-free Go library. To work on both at once, point this module at a
+local checkout with a (gitignored) workspace file:
 
 ```bash
 go work init . ../notuya-go
 ```
 
-It consumes the library's public `pkg/` surface — `pkg/protocol`,
-`pkg/protocol35`, `pkg/device`, `pkg/bulb`, and `pkg/discovery` — and never
-touches DP numbers or wire framing. It builds a `*bulb.Bulb` per device and feeds
-`bulb.StreamColours` a channel of colours during live drags.
-
-</details>
+See [CHANGELOG.md](CHANGELOG.md) for release history.

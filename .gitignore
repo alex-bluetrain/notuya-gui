@@ -8,3 +8,4 @@ __pycache__/
 # local dev only
 go.work
 go.work.sum
+screenshots/

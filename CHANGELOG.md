@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/alex-bluetrain/notuya-gui/compare/v1.1.0...v1.2.0) (2026-09-30)
+
+
+### Features
+
+* **gui:** unify the Settings tab with the first-run wizard ([6eaf2a0](https://github.com/alex-bluetrain/notuya-gui/commit/6eaf2a00274674fb275a087e64ce57716c58f113))
+
 ## [1.1.0](https://github.com/alex-bluetrain/notuya-gui/compare/v1.0.0...v1.1.0) (2026-09-30)
 
 

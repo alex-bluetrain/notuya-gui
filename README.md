@@ -7,11 +7,15 @@ and no vendor app.**
 ![Platform](https://img.shields.io/badge/platform-Linux%20%2F%20Wayland-333)
 ![GTK4](https://img.shields.io/badge/GTK4-libadwaita-4A86CF)
 
-
 notuya-gui is a native GTK4 / libadwaita app that talks to your bulbs directly
 over the local network. Commands go straight from your desktop to the bulb, so
 the lights respond instantly and keep working when the internet — or Tuya's
 servers — don't.
+
+<p align="center">
+  <img src="img/scenes.png" alt="The Scenes tab, showing saved scenes as colour tiles" width="282" align="top">
+  <img src="img/scene-editor.png" alt="The scene editor, setting each light's colour on a colour wheel" width="322" align="top">
+</p>
 
 ## Features
 

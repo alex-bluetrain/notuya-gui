@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/alex-bluetrain/notuya-go/pkg/bulb"
 	"github.com/alex-bluetrain/notuya-go/pkg/device"
 	"github.com/alex-bluetrain/notuya-go/pkg/discovery"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
@@ -323,14 +324,13 @@ func (w *wizard) onKeyChanged(row *wizardRow) {
 	w.updateApplySensitivity()
 }
 
-// testRow opens a throwaway session against the device (not yet saved to
-// config) and flashes it red, then blue, then white — each held briefly and
-// then turned off — so the user can visually confirm which physical bulb
-// answered. Success marks the row tested; any error fails it and leaves
-// Apply disabled. Triggered automatically once the key field reaches 16
-// characters (see onKeyChanged/debounceTest), not by a button. Feedback is
-// the leading icon (spinner while testing, then bulb state via refreshIcon)
-// plus, on failure, an error tooltip on the key field.
+// testRow runs runWizardTest against the device off the GTK thread: a quick
+// red→blue→white flash so the user can see which physical bulb answered, after
+// which the bulb is left in its pre-test state. Success marks the row tested;
+// any error fails it and leaves Apply disabled. Triggered by the row's Test
+// button (enabled once the key field holds 16 characters) or by pressing Enter
+// in that field. Feedback is the leading icon (spinner while testing, then bulb
+// state via refreshIcon) plus, on failure, an error tooltip on the key field.
 func (w *wizard) testRow(row *wizardRow) {
 	if row.inFlight {
 		return
@@ -372,31 +372,76 @@ func (w *wizard) testRow(row *wizardRow) {
 	}()
 }
 
-// runWizardTest drives the flash sequence against a throwaway control. It
-// owns the control's whole lifecycle (open, command, close) since the device
-// isn't part of the app's persistent controls yet.
+// wizardFlashHold is how long each colour of the test flash is held. Kept
+// short so the whole red→blue→white flash lands in under a second, a snappy
+// blink rather than the slow one-command-per-colour march that discrete writes
+// would give.
+const wizardFlashHold = 250 * time.Millisecond
+
+// runWizardTest proves a bulb answers on its local key by flashing it, and
+// leaves it usable afterwards — never off, never on a colour the user didn't
+// pick.
+//
+// The flash runs in music mode (the same streaming path the picker and live
+// drag use): one session stays open and colours are pushed with a zero-length
+// transition, so red→blue→white blinks fast (< 1s) instead of the multi-second
+// crawl a command-per-colour sequence produces. The bulb's pre-test state is
+// snapshotted first over a brief command session and restored as the final
+// streamed colour; closing the streamer re-issues that colour as a normal
+// write, leaving music mode cleanly. If the snapshot can't be read the bulb is
+// left on in white. Any failure to open the session (bad key, wrong IP) fails
+// the test.
 func runWizardTest(d Device) error {
-	ctl := newControl(d)
-	defer ctl.Close()
+	// Snapshot the current state over a short-lived command session, then
+	// close it so the bulb has no session open when the streamer connects
+	// (a v3.5 bulb serves one LAN session at a time).
+	snap := newControl(d)
+	snapCtx, cancel := context.WithTimeout(context.Background(), wizardTestTimeout)
+	before, snapErr := snap.Refresh(snapCtx)
+	cancel()
+	snap.Close()
+	if snapErr != nil {
+		// Couldn't even read the bulb: prove the connection with a plain
+		// open so a bad key still fails the test, then flash from scratch.
+		probe := newControl(d)
+		pctx, pcancel := context.WithTimeout(context.Background(), wizardTestTimeout)
+		perr := probe.SetWhiteBrightness(pctx, 100)
+		pcancel()
+		probe.Close()
+		if perr != nil {
+			return perr
+		}
+	}
 
 	red := device.RGB{R: 255, G: 0, B: 0}
 	blue := device.RGB{R: 0, G: 0, B: 255}
-	steps := []func(ctx context.Context) error{
-		func(ctx context.Context) error { return ctl.SetColour(ctx, red) },
-		func(ctx context.Context) error { return ctl.SetPower(ctx, false) },
-		func(ctx context.Context) error { return ctl.SetColour(ctx, blue) },
-		func(ctx context.Context) error { return ctl.SetPower(ctx, false) },
-		func(ctx context.Context) error { return ctl.SetWhiteBrightness(ctx, 100) },
-		func(ctx context.Context) error { return ctl.SetPower(ctx, false) },
+	white := device.RGB{R: 255, G: 255, B: 255}
+
+	// Instant cuts between flash colours: no fade.
+	instant := 0
+	str := newStreamer([]Device{d}, red, bulb.StreamOptions{Transition: &instant})
+
+	// Make sure the bulb is on for the flash even if it was off.
+	str.SetPower(true)
+	time.Sleep(wizardFlashHold)
+	for _, c := range []device.RGB{blue, white} {
+		str.Set(c, &instant)
+		time.Sleep(wizardFlashHold)
 	}
-	for _, step := range steps {
-		ctx, cancel := context.WithTimeout(context.Background(), wizardTestTimeout)
-		err := step(ctx)
+	// Close the streamer, which fixes the last colour with a normal write and
+	// leaves music mode so the bulb is back under ordinary command control.
+	str.Close()
+
+	// Restore the exact pre-test state (mode, brightness, temp, or off) over a
+	// fresh command session. If we couldn't snapshot it the bulb stays on in
+	// white from the flash, which is usable. Restore errors are ignored: the
+	// connection is already proven.
+	if snapErr == nil {
+		ctl := newControl(d)
+		restCtx, cancel := context.WithTimeout(context.Background(), wizardTestTimeout)
+		_ = ctl.ApplyState(restCtx, stateFromStatus(d.DeviceID, before))
 		cancel()
-		if err != nil {
-			return err
-		}
-		time.Sleep(500 * time.Millisecond)
+		ctl.Close()
 	}
 	return nil
 }

@@ -71,7 +71,8 @@ func sceneStateColour(st SceneState) (r, g, b uint8) {
 
 // sceneTileBaseCSS is the shared, scene-independent styling for the Hue-style
 // scene tiles: a rounded card shape with a minimum size, a bottom scrim behind
-// the name for legibility, a subtle hover lift, and small translucent corner
+// the name for legibility, an accent ring on hover/keyboard focus, a slight
+// press shrink, and small translucent corner
 // action buttons. Per-tile gradients (from sceneGradientCSS) supply the fill.
 const sceneTileBaseCSS = `
 .scenes-flow > flowboxchild {
@@ -103,18 +104,22 @@ const sceneTileBaseCSS = `
   background-clip: padding-box;
   border-radius: 16px;
   box-shadow: none;
-  opacity: 0.55;
-  transition: opacity 200ms ease;
+  outline: 3px solid transparent;
+  outline-offset: 3px;
+  transition: outline-color 150ms ease, transform 100ms ease;
 }
 .scene-tile:hover,
 .scene-tile:active,
 .scene-tile:focus {
   box-shadow: none;
   border: none;
-  outline: none;
 }
-.scene-tile:hover {
-  opacity: 1;
+.scene-tile:hover,
+.scene-tile:focus-visible {
+  outline-color: @accent_color;
+}
+.scene-tile:active {
+  transform: scale(0.98);
 }
 .scene-add {
   min-width: 150px;

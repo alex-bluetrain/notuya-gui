@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.1.0](https://github.com/alex-bluetrain/notuya-gui/compare/v1.0.0...v1.1.0) (2026-09-30)
+
+
+### Features
+
+* **gui:** add first-run setup wizard for empty configs ([7ed9cf0](https://github.com/alex-bluetrain/notuya-gui/commit/7ed9cf0672a4c16bf014178b5077614d77b64d02))
+
+
+### Bug Fixes
+
+* **gui:** give each light one control, and Power a label of its own ([5333c71](https://github.com/alex-bluetrain/notuya-gui/commit/5333c711a3d4a9001924285fb613be54f6252c8d))
+* **gui:** make the wizard test a fast flash that restores the bulb ([80f73a4](https://github.com/alex-bluetrain/notuya-gui/commit/80f73a4981dade26bede0fffe91a21f8aa1c7e6e))
+* **gui:** make the wizard test flash a fast strobe (~200ms) ([03b484d](https://github.com/alex-bluetrain/notuya-gui/commit/03b484d40e9cd8c170fc6ac276661ff542471bc7))
+* **gui:** stop mangling local keys and widen the wizard key field ([dc12371](https://github.com/alex-bluetrain/notuya-gui/commit/dc12371cb7f4daec6e1f12f416512f32e7bee239))
+* **gui:** wizard test blinks white three times in ~200ms ([dbccbe7](https://github.com/alex-bluetrain/notuya-gui/commit/dbccbe7827c60b3618d1f35b23a4d5d42b5bc424))
+* **gui:** wizard test blinks white with discrete writes, leaves bulb on ([6398d56](https://github.com/alex-bluetrain/notuya-gui/commit/6398d562d628d8bd5545e1d7f31bc3fa70092152))
+
 ## 1.0.0 (2026-09-28)
 
 

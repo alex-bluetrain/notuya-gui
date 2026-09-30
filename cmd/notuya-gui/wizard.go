@@ -6,8 +6,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/alex-bluetrain/notuya-go/pkg/bulb"
-	"github.com/alex-bluetrain/notuya-go/pkg/device"
 	"github.com/alex-bluetrain/notuya-go/pkg/discovery"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
@@ -372,82 +370,47 @@ func (w *wizard) testRow(row *wizardRow) {
 	}()
 }
 
-// wizardFlashHold is how long each colour of the test flash is shown. Kept at
-// ~50ms so a run of several colours reads as a rapid blink (total ~200ms), not
-// a slow colour walk. It sits just above the streamer's ~40ms throttle so every
-// colour still lands.
-const wizardFlashHold = 50 * time.Millisecond
+// wizardFlashHold is the pause between flash steps, long enough for the eye to
+// catch each on/off pulse. Each step is a discrete white-brightness command, so
+// the change is instantaneous — no fade, no ramp.
+const wizardFlashHold = 120 * time.Millisecond
 
-// wizardFlashColours is the rapid blink sequence, chosen to strobe through
-// distinct hues so the answering bulb is unmistakable at speed.
-var wizardFlashColours = []device.RGB{
-	{R: 255, G: 0, B: 0},     // red
-	{R: 0, G: 0, B: 255},     // blue
-	{R: 255, G: 255, B: 255}, // white
-	{R: 255, G: 0, B: 0},     // red again — a second pulse reads as a blink
-}
+// wizardFlashSteps is the white-brightness blink: dark, full, dark, full. Each
+// value is a percentage written straight to the white-mode brightness DP, so
+// the bulb snaps between off-dark and full-white with no transition. The run
+// ends on 100 so the bulb is left on in bright white after the test.
+var wizardFlashSteps = []float64{0, 100, 0, 100}
 
-// runWizardTest proves a bulb answers on its local key by flashing it, and
-// leaves it usable afterwards — never off, never on a colour the user didn't
-// pick.
+// runWizardTest proves a bulb answers on its local key by flashing it white,
+// and leaves it on afterwards.
 //
-// The flash runs in music mode (the same streaming path the picker and live
-// drag use): one session stays open and colours are pushed with a zero-length
-// transition, so the bulb strobes through wizardFlashColours in ~200ms instead
-// of the multi-second crawl a command-per-colour sequence produces. The bulb's
-// pre-test state is snapshotted first over a brief command session and restored
-// afterwards; closing the streamer leaves music mode cleanly. If the snapshot
-// can't be read the bulb is left on in white. Any failure to open the session
-// (bad key, wrong IP) fails the test.
+// It opens one command session and snaps the white-mode brightness between dark
+// and full a few times — each step a discrete, instantaneous write, so the bulb
+// blinks white rather than fading. The first write also proves the key: a bad
+// key or wrong IP fails to connect and fails the test. The bulb is left on at
+// full white brightness.
 func runWizardTest(d Device) error {
-	// Snapshot the current state over a short-lived command session, then
-	// close it so the bulb has no session open when the streamer connects
-	// (a v3.5 bulb serves one LAN session at a time).
-	snap := newControl(d)
-	snapCtx, cancel := context.WithTimeout(context.Background(), wizardTestTimeout)
-	before, snapErr := snap.Refresh(snapCtx)
+	ctl := newControl(d)
+	defer ctl.Close()
+
+	// Power on first so an off bulb still flashes. If this fails the key is
+	// wrong or the bulb is unreachable — the test fails.
+	powCtx, cancel := context.WithTimeout(context.Background(), wizardTestTimeout)
+	err := ctl.SetPower(powCtx, true)
 	cancel()
-	snap.Close()
-	if snapErr != nil {
-		// Couldn't even read the bulb: prove the connection with a plain
-		// open so a bad key still fails the test, then flash from scratch.
-		probe := newControl(d)
-		pctx, pcancel := context.WithTimeout(context.Background(), wizardTestTimeout)
-		perr := probe.SetWhiteBrightness(pctx, 100)
-		pcancel()
-		probe.Close()
-		if perr != nil {
-			return perr
-		}
+	if err != nil {
+		return err
 	}
 
-	// Instant cuts between flash colours: no fade.
-	instant := 0
-	str := newStreamer([]Device{d}, wizardFlashColours[0], bulb.StreamOptions{Transition: &instant})
-
-	// Make sure the bulb is on for the flash even if it was off, then strobe
-	// through the remaining colours. The seed colour is already showing, so
-	// hold it once before pushing the rest.
-	str.SetPower(true)
-	time.Sleep(wizardFlashHold)
-	for _, c := range wizardFlashColours[1:] {
-		str.Set(c, &instant)
-		time.Sleep(wizardFlashHold)
-	}
-	// Close the streamer, which fixes the last colour with a normal write and
-	// leaves music mode so the bulb is back under ordinary command control.
-	str.Close()
-
-	// Restore the exact pre-test state (mode, brightness, temp, or off) over a
-	// fresh command session. If we couldn't snapshot it the bulb stays on in
-	// white from the flash, which is usable. Restore errors are ignored: the
-	// connection is already proven.
-	if snapErr == nil {
-		ctl := newControl(d)
-		restCtx, cancel := context.WithTimeout(context.Background(), wizardTestTimeout)
-		_ = ctl.ApplyState(restCtx, stateFromStatus(d.DeviceID, before))
+	// Blink white brightness dark↔full. Each write is instantaneous.
+	for _, pct := range wizardFlashSteps {
+		stepCtx, cancel := context.WithTimeout(context.Background(), wizardTestTimeout)
+		err := ctl.SetWhiteBrightness(stepCtx, pct)
 		cancel()
-		ctl.Close()
+		if err != nil {
+			return err
+		}
+		time.Sleep(wizardFlashHold)
 	}
 	return nil
 }

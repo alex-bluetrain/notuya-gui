@@ -370,25 +370,25 @@ func (w *wizard) testRow(row *wizardRow) {
 	}()
 }
 
-// wizardFlashHold is the pause between flash steps, long enough for the eye to
-// catch each on/off pulse. Each step is a discrete white-brightness command, so
-// the change is instantaneous — no fade, no ramp.
-const wizardFlashHold = 120 * time.Millisecond
+// wizardFlashHold is the extra pause between flash steps. Kept tiny because
+// each step is already a network round trip; with the six steps below the whole
+// blink lands in roughly 200ms.
+const wizardFlashHold = 15 * time.Millisecond
 
-// wizardFlashSteps is the white-brightness blink: dark, full, dark, full. Each
+// wizardFlashSteps is the white-brightness blink: three dark→full pulses. Each
 // value is a percentage written straight to the white-mode brightness DP, so
-// the bulb snaps between off-dark and full-white with no transition. The run
-// ends on 100 so the bulb is left on in bright white after the test.
-var wizardFlashSteps = []float64{0, 100, 0, 100}
+// the bulb snaps between dark and full white with no transition. The run ends
+// on 100 so the bulb is left on in bright white after the test.
+var wizardFlashSteps = []float64{0, 100, 0, 100, 0, 100}
 
-// runWizardTest proves a bulb answers on its local key by flashing it white,
+// runWizardTest proves a bulb answers on its local key by blinking it white,
 // and leaves it on afterwards.
 //
 // It opens one command session and snaps the white-mode brightness between dark
-// and full a few times — each step a discrete, instantaneous write, so the bulb
-// blinks white rather than fading. The first write also proves the key: a bad
-// key or wrong IP fails to connect and fails the test. The bulb is left on at
-// full white brightness.
+// and full three times — each step a discrete, instantaneous write, so the bulb
+// blinks white rather than fading, in about 200ms total. The first write also
+// proves the key: a bad key or wrong IP fails to connect and fails the test.
+// The bulb is left on at full white brightness.
 func runWizardTest(d Device) error {
 	ctl := newControl(d)
 	defer ctl.Close()

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/alex-bluetrain/notuya-gui/compare/v1.2.0...v1.3.0) (2026-09-30)
+
+
+### Features
+
+* **gui:** show scene tiles at full colour with an accent hover ring ([0cda99e](https://github.com/alex-bluetrain/notuya-gui/commit/0cda99e37f7b6bd5c68202314a31885ebdb891e2))
+
 ## [1.2.0](https://github.com/alex-bluetrain/notuya-gui/compare/v1.1.0...v1.2.0) (2026-09-30)
 
 

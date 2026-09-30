@@ -33,19 +33,6 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
-func TestLastColorRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "last-color.txt")
-	if got := readLastColor(path); got != defaultColor {
-		t.Errorf("missing cache = %q want %q", got, defaultColor)
-	}
-	if err := writeLastColor(path, "ff8800"); err != nil {
-		t.Fatal(err)
-	}
-	if got := readLastColor(path); got != "ff8800" {
-		t.Errorf("round trip = %q want ff8800", got)
-	}
-}
-
 func TestSaveConfigPreservesUnknownKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	body := `{
@@ -272,9 +259,6 @@ func TestSaveConfigDoesNotEscapeHTMLInKeys(t *testing.T) {
 
 func TestPathsBesideConfig(t *testing.T) {
 	cfg := "/home/x/.config/tuya/config.json"
-	if got := lastColorPath(cfg); got != "/home/x/.config/tuya/last-color.txt" {
-		t.Errorf("lastColorPath = %q", got)
-	}
 	if got := wheelCachePath(cfg); got != "/home/x/.config/tuya/.wheel_cache.bin" {
 		t.Errorf("wheelCachePath = %q", got)
 	}

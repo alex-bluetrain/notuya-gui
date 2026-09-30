@@ -118,7 +118,6 @@ go work init . ../notuya-go
 It consumes the library's public `pkg/` surface — `pkg/protocol`,
 `pkg/protocol35`, `pkg/device`, `pkg/bulb`, and `pkg/discovery` — and never
 touches DP numbers or wire framing. It builds a `*bulb.Bulb` per device and feeds
-`bulb.StreamColours` a channel of colours, the same loop the CLI's `music`
-command uses.
+`bulb.StreamColours` a channel of colours during live drags.
 
 </details>

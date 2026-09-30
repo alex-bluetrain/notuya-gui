@@ -151,9 +151,9 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 		},
 		// Wheel drag → live preview on every checked light.
 		OnDragBegin: func(rgb device.RGB) {
-			tt := transitionValue(lt.trans.ActiveName() == "fade")
+			mode := changeModeOf(lt.trans)
 			for _, t := range lt.checked() {
-				t.ctl.BeginLiveDrag(rgb, tt)
+				t.ctl.BeginLiveDrag(rgb, mode)
 			}
 		},
 		OnDragUpdate: func(rgb device.RGB) {
@@ -196,9 +196,9 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 		v := lt.cc.Bright.Value()
 		r, g, b := hsvToRGBInt(lt.cc.hue, lt.cc.sat, v/100.0)
 		rgb := device.RGB{R: r, G: g, B: b}
-		tt := transitionValue(lt.trans.ActiveName() == "fade")
+		mode := changeModeOf(lt.trans)
 		for _, t := range lt.checked() {
-			t.ctl.BeginLiveDrag(rgb, tt)
+			t.ctl.BeginLiveDrag(rgb, mode)
 		}
 		lt.brightDragging = true
 	})
@@ -214,24 +214,19 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	})
 	lt.cc.Bright.AddController(brightDrag)
 
-	// Transition toggle: DP 28's change mode is boolean (0 = direct/jump,
-	// 1 = gradual/fade), so this is a two-way toggle, not a range. Jump snaps
-	// to each colour instantly (steppy); Fade smears one colour into the next.
-	// Takes effect live mid-drag.
-	lt.trans = newTransitionToggle(func(isFade bool) {
+	// Change-mode toggle (DP 28): Jump snaps to each colour instantly
+	// (steppy); Fade smears one colour into the next. Takes effect live
+	// mid-drag.
+	lt.trans = newChangeModeToggle(func(mode device.ChangeMode) {
 		if lt.suppress {
 			return
 		}
 		for _, t := range lt.checked() {
-			t.ctl.SetLiveTransition(transitionValue(isFade))
+			t.ctl.SetLiveChangeMode(mode)
 		}
 	})
 	inner.Append(lt.trans)
-	if device.DefaultTransition != 0 {
-		lt.trans.SetActiveName("fade")
-	} else {
-		lt.trans.SetActiveName("jump")
-	}
+	setChangeMode(lt.trans, device.DefaultChangeMode)
 
 	body.Append(controls)
 
@@ -301,15 +296,6 @@ func (lt *lightsTab) syncPowerSwitch() {
 	lt.suppress = true
 	lt.power.SetActive(any)
 	lt.suppress = was
-}
-
-// transitionValue maps the Instant|Smooth toggle to DP 28's change-mode flag:
-// 0 = direct (Instant), 1 = gradual (Smooth).
-func transitionValue(fade bool) int {
-	if fade {
-		return 1
-	}
-	return 0
 }
 
 // --- broadcast helpers (all off the GTK thread via the controls) ---

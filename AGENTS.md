@@ -35,7 +35,7 @@ Everything is under `cmd/notuya-gui/`:
 
 - Config: `~/.config/notuya-gui/config.json` (override `$NOTUYA_CONFIG`). Rooms
   are top-level, not a per-device field. `saveConfig` is atomic and preserves
-  unknown keys (the file is co-owned with the CLI).
+  unknown keys (other tools may share the file).
 - Sessions (`protocol35`) are not concurrency-safe: `control` serializes commands
   behind a mutex. Live colour drags borrow the streamer (music mode).
 - Local keys come from Tuya's cloud, entered by hand — discovery only yields

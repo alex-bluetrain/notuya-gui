@@ -13,12 +13,11 @@ import (
 )
 
 // commandTimeout bounds one device's open handshake and the final
-// leave-music-mode write, mirroring the CLI.
+// leave-music-mode write.
 const commandTimeout = 10 * time.Second
 
 // streamer owns one live session per configured device and drives them
-// in-process, exactly as the CLI's `music` command does over stdin — minus
-// the HTTP hop. Each device runs bulb.StreamColours on its own goroutine,
+// in-process. Each device runs bulb.StreamColours on its own goroutine,
 // fed by a buffered(1) newest-wins channel so a slow bulb never stalls the
 // GUI thread.
 type streamer struct {
@@ -30,12 +29,11 @@ type streamer struct {
 type target struct {
 	name    string
 	colours chan bulb.StreamColour
-	power   chan bool
 }
 
 // newStreamer starts a streaming goroutine per device, seeded with the
 // initial colour so music mode is entered without a flicker. opts carries
-// the default transition and interval.
+// the default change mode and interval.
 func newStreamer(devices []Device, initial device.RGB, opts bulb.StreamOptions) *streamer {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &streamer{cancel: cancel}
@@ -48,7 +46,6 @@ func newStreamer(devices []Device, initial device.RGB, opts bulb.StreamOptions) 
 		t := &target{
 			name:    name,
 			colours: make(chan bulb.StreamColour, 1),
-			power:   make(chan bool, 1),
 		}
 		// Seed the initial colour so the first send enters music mode
 		// on the colour the wheel already shows.
@@ -70,20 +67,11 @@ func newStreamer(devices []Device, initial device.RGB, opts bulb.StreamOptions) 
 	return s
 }
 
-// Set broadcasts a colour (with optional per-colour transition) to every
+// Set broadcasts a colour (with optional per-colour change mode) to every
 // device, newest-wins. Never blocks the caller.
-func (s *streamer) Set(rgb device.RGB, transition *int) {
+func (s *streamer) Set(rgb device.RGB, mode *device.ChangeMode) {
 	for _, t := range s.targets {
-		offer(t.colours, bulb.StreamColour{RGB: rgb, Transition: transition})
-	}
-}
-
-// SetPower toggles every device on or off. Non-blocking: the request is
-// coalesced onto each device's power channel and applied by its goroutine,
-// serialized with streaming so the two never race on one session.
-func (s *streamer) SetPower(on bool) {
-	for _, t := range s.targets {
-		offer(t.power, on)
+		offer(t.colours, bulb.StreamColour{RGB: rgb, ChangeMode: mode})
 	}
 }
 
@@ -114,9 +102,7 @@ func offer[T any](ch chan T, v T) {
 }
 
 // streamDevice opens one session and streams colours to it for the whole
-// run, then leaves the bulb on the last colour it received. It mirrors the
-// CLI's streamDevice, adding a power channel that toggles the bulb inline so
-// power changes and colour writes share the one session safely.
+// run, then leaves the bulb on the last colour it received.
 func streamDevice(ctx context.Context, d Device, t *target, opts bulb.StreamOptions) error {
 	sess := protocol35.NewSession(d.IPAddress, []byte(d.LocalKey))
 
@@ -130,8 +116,7 @@ func streamDevice(ctx context.Context, d Device, t *target, opts bulb.StreamOpti
 	b := bulb.NewBulb(sess, t.name)
 
 	// Tap the colour stream to remember the last colour so the bulb can be
-	// left holding it. Power requests are interleaved here, applied
-	// serially with colour sends since both touch the one session.
+	// left holding it.
 	var (
 		last    bulb.StreamColour
 		haveOne bool
@@ -139,34 +124,12 @@ func streamDevice(ctx context.Context, d Device, t *target, opts bulb.StreamOpti
 	tapped := make(chan bulb.StreamColour, 1)
 	go func() {
 		defer close(tapped)
-		for {
-			select {
-			case c, ok := <-t.colours:
-				if !ok {
-					return
-				}
-				last, haveOne = c, true
-				// Newest-wins hand-off: never park holding a stale colour,
-				// or a fast slider defeats the library's coalescing and the
-				// bulb trails behind a backlog of intermediate values.
-				offer(tapped, c)
-			case on := <-t.power:
-				pctx, pcancel := context.WithTimeout(context.Background(), commandTimeout)
-				var err error
-				if on {
-					err = b.TurnOn(pctx)
-					// Re-apply the current colour so turning on restores it.
-					if err == nil && haveOne {
-						offer(tapped, last)
-					}
-				} else {
-					err = b.TurnOff(pctx)
-				}
-				pcancel()
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "notuya-gui: %s power -> %v\n", t.name, err)
-				}
-			}
+		for c := range t.colours {
+			last, haveOne = c, true
+			// Newest-wins hand-off: never park holding a stale colour, or a
+			// fast slider defeats the library's coalescing and the bulb
+			// trails behind a backlog of intermediate values.
+			offer(tapped, c)
 		}
 	}()
 

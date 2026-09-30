@@ -42,9 +42,9 @@ type control struct {
 	// one session open at a time.
 	live *streamer
 
-	// liveTransition is the per-colour fade length (0-10, DP 28) sent with
-	// every streamed colour during the current drag. Set by BeginLiveDrag.
-	liveTransition int
+	// liveMode is the DP 28 change mode (jump/fade) sent with every
+	// streamed colour during the current drag. Set by BeginLiveDrag.
+	liveMode device.ChangeMode
 }
 
 // protocol35Session is the concrete session type returned by
@@ -186,16 +186,6 @@ func (c *control) SetColour(ctx context.Context, rgb device.RGB) error {
 	})
 }
 
-// SetColourBrightness adjusts the "v" of the current colour (DP 24) without
-// changing hue/sat or leaving colour mode. Only valid while in colour mode.
-func (c *control) SetColourBrightness(ctx context.Context, pct float64) error {
-	return c.withBulb(ctx, func(b *bulb.Bulb) error {
-		cctx, cancel := context.WithTimeout(ctx, commandTimeout)
-		defer cancel()
-		return b.SetColourBrightness(cctx, pct)
-	})
-}
-
 // SetWhiteBrightness switches to white mode and sets brightness (DP 22).
 func (c *control) SetWhiteBrightness(ctx context.Context, pct float64) error {
 	return c.withBulb(ctx, func(b *bulb.Bulb) error {
@@ -248,7 +238,7 @@ func (c *control) ApplyState(ctx context.Context, st SceneState) error {
 // streamer seeded with the current colour, so wheel drags stream smoothly. It
 // is a no-op if a drag is already in progress. Safe to call from the GTK
 // thread — the streamer starts its own goroutines.
-func (c *control) BeginLiveDrag(seed device.RGB, transition int) {
+func (c *control) BeginLiveDrag(seed device.RGB, mode device.ChangeMode) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.live != nil {
@@ -260,28 +250,28 @@ func (c *control) BeginLiveDrag(seed device.RGB, transition int) {
 		c.sess = nil
 		c.bulb = nil
 	}
-	c.liveTransition = transition
-	c.live = newStreamer([]Device{c.dev}, seed, bulb.StreamOptions{Transition: bulb.Transition(transition)})
+	c.liveMode = mode
+	c.live = newStreamer([]Device{c.dev}, seed, bulb.StreamOptions{ChangeMode: mode.Ptr()})
 }
 
-// SetLiveTransition changes the per-colour fade length applied to subsequent
-// UpdateLiveDrag sends without restarting the stream, so the transition slider
-// takes effect mid-drag.
-func (c *control) SetLiveTransition(transition int) {
+// SetLiveChangeMode changes the jump/fade mode applied to subsequent
+// UpdateLiveDrag sends without restarting the stream, so the toggle takes
+// effect mid-drag.
+func (c *control) SetLiveChangeMode(mode device.ChangeMode) {
 	c.mu.Lock()
-	c.liveTransition = transition
+	c.liveMode = mode
 	c.mu.Unlock()
 }
 
 // UpdateLiveDrag streams a colour during a drag (newest-wins, non-blocking),
-// carrying the drag's current transition so it takes effect live.
+// carrying the drag's current change mode so it takes effect live.
 func (c *control) UpdateLiveDrag(rgb device.RGB) {
 	c.mu.Lock()
 	live := c.live
-	tt := c.liveTransition
+	mode := c.liveMode
 	c.mu.Unlock()
 	if live != nil {
-		live.Set(rgb, bulb.Transition(tt))
+		live.Set(rgb, mode.Ptr())
 	}
 }
 

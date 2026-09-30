@@ -6,12 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
-
-// defaultColor is the colour assumed when the last-colour cache is missing
-// or empty — matches picker.py and the CLI's get-color.
-const defaultColor = "ffffff"
 
 // Device is one entry of the `devices` array in config.json — the only part
 // of that file this tool reads; theme/wallpaper keys used by the sibling
@@ -124,12 +119,6 @@ func resolveConfigPath() string {
 	return filepath.Join(dir, "notuya-gui", "config.json")
 }
 
-// lastColorPath returns the last-colour cache path beside the config file,
-// named to agree with the CLI/daemon (last-color.txt).
-func lastColorPath(configPath string) string {
-	return filepath.Join(filepath.Dir(configPath), "last-color.txt")
-}
-
 // wheelCachePath returns the wheel bitmap cache path beside the config file,
 // matching picker.py's .wheel_cache.bin.
 func wheelCachePath(configPath string) string {
@@ -150,8 +139,8 @@ func loadConfig(path string) (*Config, error) {
 }
 
 // saveConfig writes devices, rooms and scenes back into config.json at path,
-// preserving every other top-level key (wallpaper_sync, theme keys, anything the
-// CLI/daemon own) by round-tripping the file through a map of raw messages. The
+// preserving every other top-level key (wallpaper_sync, theme keys, anything other
+// tools own) by round-tripping the file through a map of raw messages. The
 // write is atomic: a temp file is written then renamed over path, so a crash
 // mid-write can't corrupt the shared config.
 func saveConfig(path string, devices []Device, rooms []Room, scenes []Scene) error {
@@ -235,23 +224,4 @@ func indentJSON(data []byte) ([]byte, error) {
 	}
 	buf.WriteByte('\n')
 	return buf.Bytes(), nil
-}
-
-// readLastColor returns the cached last-applied colour (hex, no '#'), or the
-// default white if the cache is missing or empty.
-func readLastColor(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return defaultColor
-	}
-	s := strings.TrimSpace(string(data))
-	if s == "" {
-		return defaultColor
-	}
-	return s
-}
-
-// writeLastColor persists the last-applied colour (hex, no '#').
-func writeLastColor(path, hexColor string) error {
-	return os.WriteFile(path, []byte(hexColor), 0o644)
 }

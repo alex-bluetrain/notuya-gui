@@ -33,19 +33,3 @@ func TestOfferNewestWins(t *testing.T) {
 		t.Fatal("channel empty, expected 99 queued")
 	}
 }
-
-// offer must also work for the bool power channel, the second concrete
-// instantiation used by SetPower.
-func TestOfferBool(t *testing.T) {
-	ch := make(chan bool, 1)
-	offer(ch, false)
-	offer(ch, true) // supersedes the queued false
-	select {
-	case got := <-ch:
-		if !got {
-			t.Fatalf("queued value = %v want true (newest)", got)
-		}
-	default:
-		t.Fatal("channel empty, expected newest value queued")
-	}
-}

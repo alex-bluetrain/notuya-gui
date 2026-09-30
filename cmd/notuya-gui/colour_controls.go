@@ -333,28 +333,41 @@ func newModeToggle(onChange func(isWhite bool)) *adw.ToggleGroup {
 	return group
 }
 
-// newTransitionToggle builds the Instant|Smooth segmented toggle for DP 28's
-// boolean change mode: "jump" (instant snap) and "fade" (gradual). onChange
-// fires with isFade = true when Smooth becomes active — including on
-// programmatic SetActiveName("jump"|"fade"), so callers guard it.
-func newTransitionToggle(onChange func(isFade bool)) *adw.ToggleGroup {
+// newChangeModeToggle builds the Instant|Smooth segmented toggle for DP 28's
+// change mode. Toggle names are the modes' String() forms, so
+// changeModeOf/setChangeMode round-trip through them. onChange fires on
+// every switch — including programmatic setChangeMode, so callers guard it.
+func newChangeModeToggle(onChange func(device.ChangeMode)) *adw.ToggleGroup {
 	group := adw.NewToggleGroup()
 	group.SetHExpand(true)
 
 	jump := adw.NewToggle()
-	jump.SetName("jump")
+	jump.SetName(device.ChangeJump.String())
 	jump.SetLabel("Instant")
 	group.Add(jump)
 
 	fade := adw.NewToggle()
-	fade.SetName("fade")
+	fade.SetName(device.ChangeFade.String())
 	fade.SetLabel("Smooth")
 	group.Add(fade)
 
 	group.NotifyProperty("active-name", func() {
-		onChange(group.ActiveName() == "fade")
+		onChange(changeModeOf(group))
 	})
 	return group
+}
+
+// changeModeOf reads the mode selected in a newChangeModeToggle group.
+func changeModeOf(group *adw.ToggleGroup) device.ChangeMode {
+	if group.ActiveName() == device.ChangeFade.String() {
+		return device.ChangeFade
+	}
+	return device.ChangeJump
+}
+
+// setChangeMode selects mode in a newChangeModeToggle group.
+func setChangeMode(group *adw.ToggleGroup, mode device.ChangeMode) {
+	group.SetActiveName(mode.String())
 }
 
 // disableScaleScroll prevents a GtkScale from capturing mouse-wheel events so

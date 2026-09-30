@@ -1,5 +1,5 @@
-github.com/alex-bluetrain/notuya-go v0.1.0 h1:zQBh8HGldv6bWXE1SaudtyQfSPkPDULWfPuMXjURCC4=
-github.com/alex-bluetrain/notuya-go v0.1.0/go.mod h1:cOra/396U6ipPlSPNF32wPIWayC8Ae/dCSwTtgPCyRA=
+github.com/alex-bluetrain/notuya-go v0.1.1-0.20260930200132-a561dc554fc0 h1:lNDULr5b+5XKRZZdv2OcbDMokS9Z7A4jMXlhfH+8G/o=
+github.com/alex-bluetrain/notuya-go v0.1.1-0.20260930200132-a561dc554fc0/go.mod h1:Xhk2PHCNijhVHHCn8Ju35q2MHGKEOONFaU7sYt9w1yI=
 github.com/diamondburned/gotk4-adwaita/pkg v0.0.0-20260808200908-d4aecaa0ff32 h1:1EATAO7ZRrY7B7lt6djCzGnLPlKXPzuOuwPzDSF7jT0=
 github.com/diamondburned/gotk4-adwaita/pkg v0.0.0-20260808200908-d4aecaa0ff32/go.mod h1:ZzYiyPe0TqsukfPHi0sK/WwKzm0wIJdSRylLnuvAZNw=
 github.com/diamondburned/gotk4/pkg v0.4.1 h1:w4BwVUUBkKyNLz5HKHN2Oz3kZCTLHfpfKgB/su1p6uo=

@@ -219,7 +219,7 @@ func (e *sceneEditor) newDeviceRow(dev Device) *sceneDeviceRow {
 		},
 		OnDragBegin: func(rgb device.RGB) {
 			r.syncHS()
-			r.ctl.BeginLiveDrag(rgb, device.DefaultTransition)
+			r.ctl.BeginLiveDrag(rgb, device.DefaultChangeMode)
 		},
 		OnDragUpdate: func(rgb device.RGB) {
 			r.syncHS()

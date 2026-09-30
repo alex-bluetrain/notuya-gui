@@ -57,7 +57,7 @@ func TestFoundLightsTitle(t *testing.T) {
 	}
 }
 
-func TestAllTested(t *testing.T) {
+func TestAllReady(t *testing.T) {
 	cases := []struct {
 		name  string
 		flags []bool
@@ -74,8 +74,8 @@ func TestAllTested(t *testing.T) {
 		for i, f := range c.flags {
 			rows[i] = &wizardRow{tested: f}
 		}
-		if got := allTested(rows); got != c.want {
-			t.Errorf("%s: allTested = %v want %v", c.name, got, c.want)
+		if got := allReady(rows); got != c.want {
+			t.Errorf("%s: allReady = %v want %v", c.name, got, c.want)
 		}
 	}
 }

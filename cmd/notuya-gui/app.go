@@ -358,6 +358,30 @@ func (a *desktopApp) refreshMembers() {
 	}
 }
 
+func roomHasDevice(r *Room, id string) bool {
+	for _, d := range r.Devices {
+		if d == id {
+			return true
+		}
+	}
+	return false
+}
+
+func addRoomDevice(r *Room, id string) {
+	if !roomHasDevice(r, id) {
+		r.Devices = append(r.Devices, id)
+	}
+}
+
+func removeRoomDevice(r *Room, id string) {
+	for i, d := range r.Devices {
+		if d == id {
+			r.Devices = append(r.Devices[:i], r.Devices[i+1:]...)
+			return
+		}
+	}
+}
+
 // upsertRoom adds a new room or renames the selected one, then persists.
 func (a *desktopApp) upsertRoom() {
 	name := a.roomNameEntry.Text()
@@ -456,27 +480,18 @@ func (rr *roomRow) updateSummary() {
 	rr.suppress = false
 }
 
-// buildSettingsTab embeds the settings UI as a tab. It seeds a settings
-// instance from a.cfg and routes its Save back through a.cfg so the scenes
-// tab and settings tab never clobber each other's slice of the config.
+// buildSettingsTab embeds the setup wizard as the Settings tab, seeded with the
+// configured devices so a scan merges rather than replaces them. The callbacks
+// preserve the owner's scenes/rooms on save and mirror device edits back to
+// a.cfg.
 func (a *desktopApp) buildSettingsTab() gtk.Widgetter {
-	s := &settings{
-		configPath: a.configPath,
-		devices:    append([]Device(nil), a.cfg.Devices...),
-		rooms:      a.cfg.Rooms,
-		scenes:     a.cfg.Scenes,
-		selected:   -1,
-	}
-	// Pull the owner's current scenes and rooms at save time (the Scenes tab
-	// and the Rooms tab own those slices), and mirror settings' device edits
-	// back into a.cfg on save. settings.save writes the full (devices, rooms,
-	// scenes) triple.
-	s.scenesFn = func() []Scene { return a.cfg.Scenes }
-	s.roomsFn = func() []Room { return a.cfg.Rooms }
-	s.onSaved = func() {
-		a.cfg.Devices = s.devices
-	}
-	return s.buildContent()
+	return buildEmbeddedWizard(
+		a.configPath,
+		a.cfg.Devices,
+		func() []Scene { return a.cfg.Scenes },
+		func() []Room { return a.cfg.Rooms },
+		func(devices []Device) { a.cfg.Devices = devices },
+	)
 }
 
 // groupPower toggles every member panel's device off the GTK thread.

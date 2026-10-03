@@ -136,3 +136,59 @@ func TestDeviceFromWithEscapedKey(t *testing.T) {
 		t.Errorf("deviceFrom with escaped key = %+v want %+v", got, want)
 	}
 }
+
+// Settings-tab Test must drive a known bulb through the app's own control,
+// re-pointed at the key under test, and never close or replace it. Unknown
+// bulbs get a row-owned control that is reused until the key or IP changes.
+func TestControlForSharesTheAppControl(t *testing.T) {
+	saved := Device{DeviceID: "dev1", IPAddress: "10.0.0.5", LocalKey: "0123456789abcdef", Name: "Desk"}
+	app := newControl(saved)
+	w := &wizard{shared: func(id string) *control {
+		if id == saved.DeviceID {
+			return app
+		}
+		return nil
+	}}
+
+	// Known device, same credentials: borrow the app's control untouched.
+	row := &wizardRow{}
+	if got := w.controlFor(row, saved); got != app || !row.shared || app.device() != saved {
+		t.Fatalf("known device: got %p shared=%v dev=%+v; want the app control", got, row.shared, app.device())
+	}
+
+	// Re-keyed: still the app's control, now pointed at the new key.
+	rekeyed := saved
+	rekeyed.LocalKey = "fedcba9876543210"
+	if got := w.controlFor(row, rekeyed); got != app || app.device() != rekeyed {
+		t.Fatalf("re-keyed device: got %p dev=%+v; want the app control on the new key", got, app.device())
+	}
+
+	// Releasing a borrowed control must not close it.
+	releaseControl(row)
+	if row.ctl != nil || row.shared {
+		t.Fatal("releaseControl should clear the row")
+	}
+
+	// Unknown device: a private control, kept while the device is unchanged
+	// and replaced when the key changes.
+	other := Device{DeviceID: "new", IPAddress: "10.0.0.9", LocalKey: "0123456789abcdef"}
+	row2 := &wizardRow{}
+	first := w.controlFor(row2, other)
+	if first == app || row2.shared {
+		t.Fatal("unknown device must get a private control")
+	}
+	if w.controlFor(row2, other) != first {
+		t.Fatal("same credentials must reuse the private control")
+	}
+	other.LocalKey = "fedcba9876543210"
+	if w.controlFor(row2, other) == first {
+		t.Fatal("a changed key must recreate the private control")
+	}
+
+	// No shared lookup at all (first-run wizard): private controls only.
+	solo := &wizard{}
+	row3 := &wizardRow{}
+	if got := solo.controlFor(row3, saved); got == app || row3.shared {
+		t.Fatal("first-run wizard must not borrow anything")
+	}
+}

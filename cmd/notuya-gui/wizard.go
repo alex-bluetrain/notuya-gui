@@ -56,11 +56,14 @@ func runWizard(configPath string) (code int, applied bool) {
 // buildEmbeddedWizard builds the wizard as a widget for the Settings tab. It
 // seeds the list with the already-configured devices (existing) so a scan
 // merges rather than replaces; scenesFn/roomsFn preserve the owner's
-// scenes/rooms on Apply, and onSaved mirrors the written devices back.
-func buildEmbeddedWizard(configPath string, existing []Device, scenesFn func() []Scene, roomsFn func() []Room, onSaved func([]Device)) gtk.Widgetter {
+// scenes/rooms on Apply, and onSaved mirrors the written devices back. shared
+// resolves a device_id to the control the app already drives that bulb with,
+// so Test never opens a session beside it (nil for unknown devices).
+func buildEmbeddedWizard(configPath string, existing []Device, shared func(deviceID string) *control, scenesFn func() []Scene, roomsFn func() []Room, onSaved func([]Device)) gtk.Widgetter {
 	w := &wizard{
 		configPath: configPath,
 		existing:   append([]Device(nil), existing...),
+		shared:     shared,
 		scenesFn:   scenesFn,
 		roomsFn:    roomsFn,
 		onSaved:    onSaved,
@@ -82,6 +85,9 @@ type wizard struct {
 	scenesFn func() []Scene
 	roomsFn  func() []Room
 	onSaved  func([]Device)
+	// shared (embedded mode) looks up the app's own control for a device_id;
+	// Test goes through it so the bulb keeps a single session (see controlFor).
+	shared func(deviceID string) *control
 
 	// embeddedRoot parents the error dialog in embedded mode (no window).
 	embeddedRoot gtk.Widgetter
@@ -109,7 +115,10 @@ type wizardRow struct {
 	testBtn    *gtk.Button
 	statusSpin *gtk.Spinner
 
-	ctl *control // persistent session, reused across tests
+	ctl *control // session used by Test; see controlFor
+	// shared marks ctl as borrowed from the app (never closed or recreated by
+	// the wizard) rather than owned by this row.
+	shared bool
 
 	tested   bool // answered a full test sequence successfully
 	inFlight bool // a test is currently running
@@ -189,11 +198,41 @@ func (w *wizard) showExisting() {
 // closeControls shuts every per-row session down when the wizard exits.
 func (w *wizard) closeControls() {
 	for _, r := range w.rows {
-		if r.ctl != nil {
-			r.ctl.Close()
-			r.ctl = nil
+		releaseControl(r)
+	}
+}
+
+// releaseControl drops the row's control, closing it only if the row owns it.
+// A control borrowed from the app stays open: other tabs are still using it.
+func releaseControl(r *wizardRow) {
+	if r.ctl != nil && !r.shared {
+		r.ctl.Close()
+	}
+	r.ctl = nil
+	r.shared = false
+}
+
+// controlFor returns the control a test of d must use. In the Settings tab a
+// device the app already drives is tested through the app's own control, so
+// the bulb only ever sees one session (AGENTS.md boundary #1); the control is
+// re-pointed at the key/IP under test. A device the app doesn't know yet gets
+// a private control owned by the row, recreated whenever the key or IP changes.
+func (w *wizard) controlFor(row *wizardRow, d Device) *control {
+	if w.shared != nil {
+		if ctl := w.shared(d.DeviceID); ctl != nil {
+			if row.ctl != ctl {
+				releaseControl(row)
+			}
+			ctl.reconfigure(d)
+			row.ctl, row.shared = ctl, true
+			return ctl
 		}
 	}
+	if row.ctl == nil || row.shared || row.ctl.device() != d {
+		releaseControl(row)
+		row.ctl = newControl(d)
+	}
+	return row.ctl
 }
 
 // buildScanningPage shows a spinner while the LAN scan runs.
@@ -292,10 +331,7 @@ func (w *wizard) scan() {
 // config rather than replacing it.
 func (w *wizard) showResults(devs []discovery.Device) {
 	for _, r := range w.rows {
-		if r.ctl != nil {
-			r.ctl.Close()
-			r.ctl = nil
-		}
+		releaseControl(r)
 		w.deviceList.Remove(r.row)
 	}
 	w.rows = w.rows[:0]
@@ -436,21 +472,22 @@ func (w *wizard) testRow(row *wizardRow) {
 	row.keyEntry.SetSensitive(false)
 	row.keyEntry.SetTooltipText("Local key (16 characters)")
 
-	// Reuse this row's persistent control, recreating it if the key changed.
-	rawKey := row.keyEntry.Text()
-	d := deviceFrom(row.dev, row.name, rawKey)
-	if row.ctl == nil || row.ctl.dev.LocalKey != d.LocalKey {
-		if row.ctl != nil {
-			row.ctl.Close()
-		}
-		row.ctl = newControl(d)
-	}
-	ctl := row.ctl
+	// Test through the app's control for a known device (one session per
+	// bulb), else this row's own. A shared control that was re-pointed at a
+	// key that then fails is restored, so a typo in Settings never breaks the
+	// Lights/Scenes tabs underneath.
+	d := deviceFrom(row.dev, row.name, row.keyEntry.Text())
+	ctl := w.controlFor(row, d)
+	prev := ctl.device()
+	restore := row.shared && prev != d
 
 	go func() {
 		err := runWizardTest(ctl)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "notuya-gui: wizard test %s (%s) failed: %v\n", row.name, ctl.dev.IPAddress, err)
+			fmt.Fprintf(os.Stderr, "notuya-gui: wizard test %s (%s) failed: %v\n", row.name, d.IPAddress, err)
+			if restore {
+				ctl.reconfigure(prev)
+			}
 		}
 		coreglib.IdleAdd(func() {
 			row.inFlight = false

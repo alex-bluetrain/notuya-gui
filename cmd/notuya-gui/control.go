@@ -3,14 +3,22 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/bulb"
 	"github.com/alex-bluetrain/notuya-go/pkg/device"
+	"github.com/alex-bluetrain/notuya-go/pkg/protocol"
 	"github.com/alex-bluetrain/notuya-go/pkg/protocol35"
 )
+
+// errLiveStream is returned by withBulb while a music-mode stream owns the
+// bulb: opening a command session beside it would give the bulb two sessions,
+// and Tuya bulbs drop the older one. Callers that need the bulb mid-stream use
+// UpdateLiveDrag instead.
+var errLiveStream = errors.New("live stream active, command refused")
 
 // deviceStatus is the parsed snapshot the desktop app renders per device. It
 // is derived from one device.Status round-trip so a panel refresh costs a
@@ -30,11 +38,21 @@ type deviceStatus struct {
 // serializes every command behind a mutex, since a session is not
 // concurrency-safe. The app issues discrete waited commands over this session
 // and only borrows music mode (the streamer) during a live colour drag.
+//
+// It is the bulb's single channel for the whole app: every tab (Lights,
+// Scenes, the scene editor, Settings' Test) must drive a device through the
+// one control the app keys by device_id, never a private session. A Tuya bulb
+// tolerates one connection at a time and silently drops the older one, so a
+// second session anywhere kills the shared one for every other tab.
 type control struct {
 	dev Device
 
+	// dial builds a session for dev; a test swaps in a fake. Defaults to
+	// protocol35.NewSession.
+	dial func(addr string, localKey []byte) protocol.Session
+
 	mu   sync.Mutex
-	sess *protocol35Session
+	sess protocol.Session
 	bulb *bulb.Bulb
 
 	// live is a short-lived music-mode streamer borrowed for a colour drag.
@@ -47,13 +65,33 @@ type control struct {
 	liveMode device.ChangeMode
 }
 
-// protocol35Session is the concrete session type returned by
-// protocol35.NewSession. Aliased so control can hold it without leaking the
-// import into other files.
-type protocol35Session = protocol35.Session
-
 func newControl(d Device) *control {
-	return &control{dev: d}
+	return &control{dev: d, dial: dialProtocol35}
+}
+
+func dialProtocol35(addr string, localKey []byte) protocol.Session {
+	return protocol35.NewSession(addr, localKey)
+}
+
+// device returns the device this control currently drives.
+func (c *control) device() Device {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dev
+}
+
+// reconfigure points the control at d (a new key or IP for the same bulb),
+// dropping any open command session so the next command dials with the new
+// credentials. A no-op when nothing changed. Settings' Test uses it so a
+// re-keyed device is still driven through the app's one control.
+func (c *control) reconfigure(d Device) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dev == d {
+		return
+	}
+	c.closeLocked()
+	c.dev = d
 }
 
 // name returns a human label for logs and the panel header.
@@ -69,7 +107,7 @@ func (c *control) connectLocked(ctx context.Context) error {
 	if c.sess != nil {
 		return nil
 	}
-	sess := protocol35.NewSession(c.dev.IPAddress, []byte(c.dev.LocalKey))
+	sess := c.dial(c.dev.IPAddress, []byte(c.dev.LocalKey))
 	openCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 	if err := sess.Open(openCtx); err != nil {
@@ -80,16 +118,54 @@ func (c *control) connectLocked(ctx context.Context) error {
 	return nil
 }
 
+// closeLocked tears down the command session, if any. The caller must hold
+// c.mu.
+func (c *control) closeLocked() {
+	if c.sess != nil {
+		c.sess.Close()
+		c.sess = nil
+		c.bulb = nil
+	}
+}
+
 // withBulb runs fn against the connected bulb under the mutex, opening the
 // session first if needed. All device I/O funnels through here so a single
 // session is never touched concurrently.
+//
+// It refuses to run while a live stream owns the bulb (errLiveStream). A
+// failing command drops the session so the next command reconnects: a session
+// the bulb has silently dropped (another connection won, the bulb rebooted)
+// otherwise fails forever. When the session already existed before this call
+// and the caller's context is still alive, it reconnects and retries once
+// right away, so a stale session costs one handshake rather than one lost
+// command.
 func (c *control) withBulb(ctx context.Context, fn func(b *bulb.Bulb) error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.live != nil {
+		return fmt.Errorf("%s: %w", c.name(), errLiveStream)
+	}
+	stale := c.sess != nil
 	if err := c.connectLocked(ctx); err != nil {
 		return err
 	}
-	return fn(c.bulb)
+	err := fn(c.bulb)
+	if err == nil {
+		return nil
+	}
+	c.closeLocked()
+	if !stale || ctx.Err() != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "notuya-gui: %s: reconnecting after %v\n", c.name(), err)
+	if rerr := c.connectLocked(ctx); rerr != nil {
+		return rerr
+	}
+	if rerr := fn(c.bulb); rerr != nil {
+		c.closeLocked()
+		return rerr
+	}
+	return nil
 }
 
 // async runs one bounded device command off the GTK thread, so a slow or
@@ -109,11 +185,7 @@ func (c *control) async(what string, fn func(ctx context.Context) error) {
 func (c *control) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.sess != nil {
-		c.sess.Close()
-		c.sess = nil
-		c.bulb = nil
-	}
+	c.closeLocked()
 }
 
 // Refresh queries the device once and parses a deviceStatus snapshot.
@@ -245,11 +317,7 @@ func (c *control) BeginLiveDrag(seed device.RGB, mode device.ChangeMode) {
 		return
 	}
 	// Hand the single session over to the streamer: close command mode first.
-	if c.sess != nil {
-		c.sess.Close()
-		c.sess = nil
-		c.bulb = nil
-	}
+	c.closeLocked()
 	c.liveMode = mode
 	c.live = newStreamer([]Device{c.dev}, seed, bulb.StreamOptions{ChangeMode: mode.Ptr()})
 }

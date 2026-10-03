@@ -487,9 +487,19 @@ func (a *desktopApp) buildSettingsTab() gtk.Widgetter {
 	return buildEmbeddedWizard(
 		a.configPath,
 		a.cfg.Devices,
+		func(id string) *control { return a.byID[id] },
 		func() []Scene { return a.cfg.Scenes },
 		func() []Room { return a.cfg.Rooms },
-		func(devices []Device) { a.cfg.Devices = devices },
+		func(devices []Device) {
+			a.cfg.Devices = devices
+			// Keep each shared control on the credentials just saved, so the
+			// bulb is driven with the same key the config now holds.
+			for _, d := range devices {
+				if ctl, ok := a.byID[d.DeviceID]; ok {
+					ctl.reconfigure(d)
+				}
+			}
+		},
 	)
 }
 

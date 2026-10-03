@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/alex-bluetrain/notuya-gui/compare/v1.3.0...v1.3.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* **gui:** drive each bulb through one shared session from every tab ([ccae6b5](https://github.com/alex-bluetrain/notuya-gui/commit/ccae6b5abbcfbd6fb6dc0c3303c7d4bd066ea9b4))
+
 ## [1.3.0](https://github.com/alex-bluetrain/notuya-gui/compare/v1.2.0...v1.3.0) (2026-09-30)
 
 

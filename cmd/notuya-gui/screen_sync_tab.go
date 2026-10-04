@@ -821,8 +821,8 @@ func (t *syncTab) stop(msg string) {
 	t.active = -1
 	t.syncSwitches()
 	t.showBanner(msg)
-	// Stop blocks while each bulb leaves music mode: off the GTK thread.
-	// The lights unlock once they have left music mode.
+	// Stop blocks while each bulb persists its final colour: off the GTK thread.
+	// The lights unlock once their streams have closed.
 	if eng != nil {
 		go func() {
 			eng.Stop()

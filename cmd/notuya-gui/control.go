@@ -13,7 +13,7 @@ import (
 	v35 "github.com/alex-bluetrain/notuya-go/pkg/session/v35"
 )
 
-// errLiveStream is returned by withBulb while a music-mode stream owns the
+// errLiveStream is returned by withBulb while a live colour stream owns the
 // bulb: opening a command session beside it would give the bulb two sessions,
 // and Tuya bulbs drop the older one. Callers that need the bulb mid-stream use
 // UpdateLive instead.
@@ -36,7 +36,7 @@ type deviceStatus struct {
 // control owns one persistent session for a single device and
 // serializes every command behind a mutex, since a session is not
 // concurrency-safe. The app issues discrete waited commands over this session
-// and only borrows music mode (the streamer) during a live colour drag.
+// and only borrows a live stream (the streamer) during a live colour drag.
 //
 // It is the bulb's single channel for the whole app: every tab (Lights,
 // Scenes, the scene editor, Settings' Test) must drive a device through the
@@ -54,7 +54,7 @@ type control struct {
 	sess session.Session
 	bulb *bulb.Bulb
 
-	// live is a music-mode streamer borrowed for a colour drag or Screen Sync.
+	// live is a live colour streamer borrowed for a colour drag or Screen Sync.
 	// While non-nil the command session is closed so the bulb only ever has
 	// one session open at a time.
 	live *streamer
@@ -319,7 +319,7 @@ func (c *control) ApplyState(ctx context.Context, st SceneState) error {
 	}
 }
 
-// BeginLive closes the command session and opens a music-mode streamer
+// BeginLive closes the command session and opens a live colour streamer
 // seeded with the current colour, owned by owner (any comparable value
 // identifying the caller: a tab, a scene-editor row, Screen Sync). It is a
 // no-op if owner already streams, and refuses with errLiveStream if someone
@@ -369,7 +369,7 @@ func (c *control) UpdateLive(owner any, rgb dp.RGB) {
 }
 
 // EndLive closes owner's streamer, which flushes the pending colour and
-// leaves music mode with a normal SetColour so the final colour sticks; the
+// re-sends it with a normal SetColour so the final colour sticks; the
 // command session then re-opens lazily on the next command. Ignored when
 // owner does not stream. It blocks up to one command timeout, so call it off
 // the GTK thread.

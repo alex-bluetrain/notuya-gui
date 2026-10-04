@@ -25,7 +25,7 @@ Everything is under `cmd/notuya-gui/`:
 - `main.go` — entry: no/empty config → wizard, else app
 - `app.go` — window, tabs, room helpers
 - `lights_tab.go` / `colour_controls.go` — Lights tab + shared colour widget
-- `control.go` / `stream.go` — per-device session; music-mode streamer for drags
+- `control.go` / `stream.go` — per-device session; live colour streamer (DP 28) for drags
 - `scenes.go` / `scene_editor.go` — scenes
 - `wizard.go` — first-run window AND the embedded Settings tab
 - `config.go` — Config/Device/Room/Scene types, `groupByRoom`, `saveConfig`
@@ -39,7 +39,7 @@ Everything is under `cmd/notuya-gui/`:
 - Sessions come from `session/v35.Open`; bulbs are driven via `bulb.Bulb` and
   `dp` types. `control` still serializes commands per device behind a mutex
   (one ordered command stream per bulb); live colour drags borrow the streamer
-  (music mode).
+  (DP 28 real-time stream).
 - Local keys come from Tuya's cloud, entered by hand — discovery only yields
   `device_id` + `ip`.
 - Develop against a local `notuya-go` via a gitignored `go.work`, never a

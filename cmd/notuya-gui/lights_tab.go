@@ -35,7 +35,7 @@ type lightsTab struct {
 	mode dp.WorkMode
 
 	// brightDragging is true while the brightness slider is being dragged in
-	// colour mode with a live music stream open, so setBrightness streams the
+	// colour mode with a live colour stream open, so setBrightness streams the
 	// colour (fades) instead of writing it discretely (snaps).
 	brightDragging bool
 
@@ -186,7 +186,7 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	})
 	lt.cc.AppendTo(inner)
 
-	// Bracket brightness drags with a live music stream so the change fades
+	// Bracket brightness drags with a live colour stream so the change fades
 	// (DP 28) in colour mode when Fade is on, matching the wheel. Outside a
 	// drag setBrightness falls back to a discrete write.
 	brightDrag := gtk.NewGestureDrag()
@@ -348,7 +348,7 @@ func (lt *lightsTab) setColour() {
 
 func (lt *lightsTab) setBrightness(v float64) {
 	// In colour mode brightness is the colour's "v", so rewrite the current
-	// selection. While the slider is dragged a live music stream is open (see
+	// selection. While the slider is dragged a live colour stream is open (see
 	// brightDrag in buildLightsTab), so the change honours Smooth — DP 28
 	// carries the fade bit, a discrete SetColour cannot. Outside a drag
 	// (keyboard, click) a discrete write is correct and cheaper. In white mode

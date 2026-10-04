@@ -12,7 +12,7 @@ import (
 )
 
 // commandTimeout bounds one device's open handshake and the final
-// leave-music-mode write.
+// final colour write.
 const commandTimeout = 10 * time.Second
 
 // streamer owns one live session per configured device and drives them
@@ -37,7 +37,7 @@ type target struct {
 }
 
 // newStreamer starts a streaming goroutine per device, seeded with the
-// initial colour so music mode is entered without a flicker. opts carries
+// initial colour so the stream starts without a flicker. opts carries
 // the default change mode and interval; dial opens each device's session.
 func newStreamer(devices []Device, initial dp.RGB, opts bulb.StreamOptions, dial dialFunc) *streamer {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -52,7 +52,7 @@ func newStreamer(devices []Device, initial dp.RGB, opts bulb.StreamOptions, dial
 			name:    name,
 			colours: make(chan bulb.StreamColour, 1),
 		}
-		// Seed the initial colour so the first send enters music mode
+		// Seed the initial colour so the first send starts
 		// on the colour the wheel already shows.
 		t.colours <- bulb.StreamColour{RGB: initial}
 		s.targets = append(s.targets, t)
@@ -82,7 +82,7 @@ func (s *streamer) Set(rgb dp.RGB, mode *dp.ChangeMode) {
 }
 
 // Close stops streaming; each goroutine flushes its pending colour and
-// leaves music mode with a normal SetColour so the final colour sticks.
+// re-sends it with a normal SetColour so the final colour sticks.
 func (s *streamer) Close() {
 	for _, t := range s.targets {
 		close(t.colours)
@@ -151,13 +151,13 @@ func streamDevice(ctx context.Context, dial dialFunc, d Device, t *target, opts 
 		return nil
 	}
 
-	// Re-issue the final colour as a normal colour-mode write: it takes the
-	// bulb out of music mode and makes the colour stick after we hang up. A
+	// Re-issue the final colour as a normal colour-mode write: it makes the
+	// colour stick after we hang up. A
 	// fresh context because ctx is cancelled on close.
 	finalCtx, cancelFinal := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancelFinal()
 	if err := b.SetColour(finalCtx, last.RGB); err != nil {
-		return fmt.Errorf("leaving music mode: %w", err)
+		return fmt.Errorf("persisting final colour: %w", err)
 	}
 	return nil
 }

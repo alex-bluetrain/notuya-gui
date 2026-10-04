@@ -99,7 +99,7 @@ func (f *fakeLight) Dead() <-chan struct{} {
 	return f.dead
 }
 
-// drop simulates the bulb closing its music session.
+// drop simulates the bulb closing its live stream.
 func (f *fakeLight) drop() {
 	f.mu.Lock()
 	defer f.mu.Unlock()

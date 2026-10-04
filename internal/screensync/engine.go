@@ -20,7 +20,7 @@ type LightSink interface {
 	// EndLive blocks; the engine only calls it off the GTK thread.
 	EndLive(owner any)
 	Streaming() bool
-	// Dead fires if the music session drops; nil while not streaming.
+	// Dead fires if the live stream drops; nil while not streaming.
 	Dead() <-chan struct{}
 }
 
@@ -182,7 +182,7 @@ func (e *Engine) SetBrightness(f float64) {
 }
 
 // Stop ends the sync. Lights keep their last colour. It blocks while each
-// light leaves music mode: never call it on the GTK thread.
+// light persists its final colour: never call it on the GTK thread.
 func (e *Engine) Stop() {
 	e.shutdown()
 	e.wg.Wait()
@@ -287,7 +287,7 @@ func scale(v, f float64) uint8 {
 }
 
 // lightRunner keeps one light streaming for the whole sync, reconnecting
-// with backoff when its music session drops.
+// with backoff when its live stream drops.
 type lightRunner struct {
 	e    *Engine
 	l    LightSink

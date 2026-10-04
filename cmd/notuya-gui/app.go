@@ -601,7 +601,7 @@ func (a *desktopApp) refreshScenesList() {
 
 	a.scenesFlow.Insert(a.buildAddSceneTile(), -1)
 
-	a.scenesCSS.LoadFromData(css.String())
+	a.scenesCSS.LoadFromString(css.String())
 }
 
 // buildSceneTile builds one scene card: a gradient-filled button that applies

@@ -56,7 +56,7 @@ var tempScaleCSSOnce sync.Once
 func ensureTempScaleCSS() {
 	tempScaleCSSOnce.Do(func() {
 		if prov := gtk.NewCSSProvider(); prov != nil {
-			prov.LoadFromData(tempScaleCSS)
+			prov.LoadFromString(tempScaleCSS)
 			if disp := gdk.DisplayGetDefault(); disp != nil {
 				gtk.StyleContextAddProviderForDisplay(disp, prov, gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 			}

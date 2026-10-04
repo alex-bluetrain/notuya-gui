@@ -93,6 +93,9 @@ func (c *control) keepLoop() {
 			if errors.Is(err, errLiveStream) {
 				continue
 			}
+			// The keeper is the probe: a failed read means the link is
+			// unusable even when the socket has not errored, so redial.
+			c.dropCurrent()
 			if !failing {
 				fmt.Fprintf(os.Stderr, "notuya-gui: %s: unreachable, retrying: %v\n", c.name(), err)
 				failing = true
@@ -162,6 +165,13 @@ func (c *control) watchLink() bool {
 			}
 		}
 	}
+}
+
+// dropCurrent closes whatever command session the control holds.
+func (c *control) dropCurrent() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closeLocked()
 }
 
 // dropSession closes sess if it is still the control's command session.

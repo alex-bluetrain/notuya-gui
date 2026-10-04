@@ -25,6 +25,8 @@ servers — don't.
 - **Rooms.** Group lights by room and control a whole room, or several, at once.
 - **Scenes.** Save a look — colour, brightness and power per light — and apply
   it with one click.
+- **Screen Sync.** Pick regions of a monitor or window and the bulbs follow
+  their average colour live. Requires Hyprland.
 - **Guided setup.** A first-run wizard finds bulbs on your network and lets you
   test each one before saving.
 - **Local and private.** Nothing is sent to the cloud; device keys stay on your
@@ -41,6 +43,8 @@ apps. Your computer must be on the same network as the bulbs.
 ## Installation
 
 Requires Linux (Wayland), GTK 4, libadwaita, Go 1.27+ and a C compiler.
+Everything works on any Wayland compositor except Screen Sync, which needs
+Hyprland.
 
 ```bash
 # Arch Linux / Omarchy
@@ -75,6 +79,9 @@ looks, and **Settings** to add bulbs or update keys.
   7000.
 - **Test fails.** Double-check the local key. Keys change whenever a bulb is
   re-paired in the Tuya app, so fetch it again after re-pairing.
+- **Bulb keeps dropping and reconnecting.** A bulb accepts only one local
+  connection. The Tuya app on the same network, or a tool like tinytuya, fights
+  notuya-gui for it and each knocks the other off. Close one of them.
 
 ## Development
 

@@ -117,7 +117,8 @@ func deviceName(d Device) string {
 // commands, the GTK thread); locked code uses deviceName(c.dev).
 func (c *control) name() string { return deviceName(c.device()) }
 
-// connect lazily opens the session (idempotent). The caller must hold c.mu.
+// connectLocked opens the session if there is none (startup, after a drop).
+// The caller must hold c.mu.
 func (c *control) connectLocked(ctx context.Context) error {
 	if c.sess != nil {
 		return nil
@@ -164,20 +165,19 @@ func (c *control) acquire(ctx context.Context) (session.Session, *bulb.Bulb, boo
 // needed. Commands may overlap; the session matches each reply to its request.
 //
 // It refuses to run while a live stream owns the bulb (errLiveStream). A
-// failing command drops its session (if it is still the current one) so the
-// next command reconnects. When the session already existed and the caller's
-// context is still alive, it reconnects and retries once right away. The
-// keeper would redial too, but only after its next probe; the retry keeps a
-// command issued in those seconds from being lost. Reconnecting the keeper
-// itself goes through here as well (it calls Refresh), so there is one dial
-// path.
+// failed command drops its session only when that session is dead (Done
+// closed); a rejected value, a timeout or a cancelled context leaves a live
+// link alone. When a session that already existed turns out dead and the
+// caller's context is still alive, it reconnects and retries once right away:
+// the keeper would redial too, but only after its next probe, and the retry
+// keeps a command issued in those seconds from being lost.
 func (c *control) withBulb(ctx context.Context, fn func(b *bulb.Bulb) error) error {
 	sess, b, existed, err := c.acquire(ctx)
 	if err != nil {
 		return err
 	}
-	if err = fn(b); err == nil {
-		return nil
+	if err = fn(b); err == nil || !isDead(sess) {
+		return err
 	}
 	c.dropSession(sess)
 	if !existed || ctx.Err() != nil {
@@ -188,11 +188,20 @@ func (c *control) withBulb(ctx context.Context, fn func(b *bulb.Bulb) error) err
 	if rerr != nil {
 		return rerr
 	}
-	if rerr = fn(b); rerr != nil {
+	if rerr = fn(b); rerr != nil && isDead(sess) {
 		c.dropSession(sess)
-		return rerr
 	}
-	return nil
+	return rerr
+}
+
+// isDead reports whether sess has failed (its Done channel is closed).
+func isDead(sess session.Session) bool {
+	select {
+	case <-sess.Done():
+		return true
+	default:
+		return false
+	}
 }
 
 // async runs one bounded device command off the GTK thread, so a slow or

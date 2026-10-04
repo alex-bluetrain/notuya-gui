@@ -178,8 +178,8 @@ func probeFormat(fd int, node uint32, drmFormat string) bool {
 		return false
 	}
 	pl, err := parsePipeline(pipewireFragment(pfd, node, drmFormat) +
-		" ! glupload ! glcolorconvert ! video/x-raw(memory:GLMemory),format=RGBA"+
-			" ! appsink name=probe sync=false max-buffers=1 drop=true")
+		" ! glupload ! glcolorconvert ! video/x-raw(memory:GLMemory),format=RGBA" +
+		" ! appsink name=probe sync=false max-buffers=1 drop=true")
 	if err != nil {
 		syscall.Close(pfd)
 		return false

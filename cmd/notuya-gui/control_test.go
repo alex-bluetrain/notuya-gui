@@ -30,7 +30,23 @@ func (s *fakeSession) call(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return s.cmdErrs[i]
+	err := s.cmdErrs[i]
+	if errors.Is(err, syscall.ECONNRESET) {
+		// Like the real session: a socket error fails it for good.
+		s.kill()
+	}
+	return err
+}
+
+func (s *fakeSession) kill() {
+	if s.done == nil {
+		s.done = make(chan struct{})
+	}
+	select {
+	case <-s.done:
+	default:
+		close(s.done)
+	}
 }
 
 func (s *fakeSession) Query(ctx context.Context) ([]byte, error) {
@@ -119,7 +135,7 @@ func TestWithBulbFreshSessionFailureIsNotRetriedButRecoversNextCommand(t *testin
 	}
 }
 
-func TestWithBulbDoesNotRetryWhenCallerContextIsDone(t *testing.T) {
+func TestWithBulbKeepsLiveSessionWhenCallerContextIsDone(t *testing.T) {
 	s1 := &fakeSession{}
 	c, dials := fakeControl(t, s1)
 	if err := c.SetPower(context.Background(), true); err != nil {
@@ -130,8 +146,28 @@ func TestWithBulbDoesNotRetryWhenCallerContextIsDone(t *testing.T) {
 	if err := c.SetPower(ctx, false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
-	if *dials != 1 || s1.closed != 1 || c.sess != nil {
-		t.Fatalf("dials=%d closed=%d sess=%v; the dead session must be dropped, not redialled", *dials, s1.closed, c.sess)
+	if *dials != 1 || s1.closed != 0 || c.sess != s1 {
+		t.Fatalf("dials=%d closed=%d sess=%v; a cancelled command must not drop a live session", *dials, s1.closed, c.sess)
+	}
+}
+
+func TestWithBulbFailureOnLiveSessionDoesNotReconnect(t *testing.T) {
+	rejected := errors.New("device rejected the value")
+	s1 := &fakeSession{cmdErrs: map[int]error{1: rejected}}
+	c, dials := fakeControl(t, s1)
+	ctx := context.Background()
+
+	if err := c.SetPower(ctx, true); err != nil {
+		t.Fatalf("first command: %v", err)
+	}
+	if err := c.SetPower(ctx, false); !errors.Is(err, rejected) {
+		t.Fatalf("want the command error back, got %v", err)
+	}
+	if err := c.SetPower(ctx, true); err != nil {
+		t.Fatalf("next command: %v", err)
+	}
+	if *dials != 1 || s1.closed != 0 || s1.calls != 3 || c.sess != s1 {
+		t.Fatalf("dials=%d closed=%d calls=%d; want 1,0,3 and the same session reused", *dials, s1.closed, s1.calls)
 	}
 }
 

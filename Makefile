@@ -1,5 +1,5 @@
 BINARY  := notuya-gui
-PKG     := ./cmd/notuya-gui
+PKG     := ./cmd/notuya-gui ./internal/...
 BINDIR  := $(HOME)/.local/bin
 
 # GTK4 + libadwaita require CGO and the system GTK4 stack.
@@ -8,7 +8,7 @@ export CGO_ENABLED := 1
 .PHONY: build run test vet check clean deps install uninstall
 
 build: ## Build the GUI binary (CGO + GTK4)
-	go build -o $(BINARY) $(PKG)
+	go build -o $(BINARY) ./cmd/notuya-gui
 
 run: build ## Build and launch the app
 	./$(BINARY)

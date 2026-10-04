@@ -36,8 +36,10 @@ Everything is under `cmd/notuya-gui/`:
 - Config: `~/.config/notuya-gui/config.json` (override `$NOTUYA_CONFIG`). Rooms
   are top-level, not a per-device field. `saveConfig` is atomic and preserves
   unknown keys (other tools may share the file).
-- Sessions (`protocol35`) are not concurrency-safe: `control` serializes commands
-  behind a mutex. Live colour drags borrow the streamer (music mode).
+- Sessions come from `session/v35.Open`; bulbs are driven via `bulb.Bulb` and
+  `dp` types. `control` still serializes commands per device behind a mutex
+  (one ordered command stream per bulb); live colour drags borrow the streamer
+  (music mode).
 - Local keys come from Tuya's cloud, entered by hand — discovery only yields
   `device_id` + `ip`.
 - Develop against a local `notuya-go` via a gitignored `go.work`, never a

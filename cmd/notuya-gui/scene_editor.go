@@ -4,7 +4,7 @@ import (
 	"context"
 	"math"
 
-	"github.com/alex-bluetrain/notuya-go/pkg/device"
+	"github.com/alex-bluetrain/notuya-go/pkg/dp"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
@@ -118,10 +118,10 @@ func (a *desktopApp) openSceneEditor(index int) {
 			row.prefill(true, st)
 		} else if index < 0 {
 			// New scene: include all with sensible defaults.
-			row.prefill(true, SceneState{DeviceID: dev.DeviceID, On: true, Mode: device.ModeColour, Bright: 100})
+			row.prefill(true, SceneState{DeviceID: dev.DeviceID, On: true, Mode: dp.ModeColour, Bright: 100})
 		} else {
 			// Editing: this device isn't in the scene → excluded, defaults.
-			row.prefill(false, SceneState{DeviceID: dev.DeviceID, On: true, Mode: device.ModeColour, Bright: 100})
+			row.prefill(false, SceneState{DeviceID: dev.DeviceID, On: true, Mode: dp.ModeColour, Bright: 100})
 		}
 		e.rows = append(e.rows, row)
 		body.Append(row.card)
@@ -217,18 +217,18 @@ func (e *sceneEditor) newDeviceRow(dev Device) *sceneDeviceRow {
 			}
 			r.onModeChanged()
 		},
-		OnDragBegin: func(rgb device.RGB) {
+		OnDragBegin: func(rgb dp.RGB) {
 			r.syncHS()
-			r.ctl.BeginLiveDrag(rgb, device.DefaultChangeMode)
+			r.ctl.BeginLive(r, rgb, dp.DefaultChangeMode)
 		},
-		OnDragUpdate: func(rgb device.RGB) {
+		OnDragUpdate: func(rgb dp.RGB) {
 			r.syncHS()
-			r.ctl.UpdateLiveDrag(rgb)
+			r.ctl.UpdateLive(r, rgb)
 		},
-		OnDragEnd: func(rgb device.RGB) {
+		OnDragEnd: func(rgb dp.RGB) {
 			r.syncHS()
-			r.ctl.UpdateLiveDrag(rgb)
-			go r.ctl.EndLiveDrag()
+			r.ctl.UpdateLive(r, rgb)
+			go r.ctl.EndLive(r)
 		},
 		OnBright: func(v float64) {
 			if r.suppress {
@@ -266,12 +266,12 @@ func (r *sceneDeviceRow) prefill(include bool, st SceneState) {
 	r.include.SetActive(include)
 	r.power.SetActive(st.On)
 
-	if st.Mode == device.ModeWhite {
+	if st.Mode == dp.ModeWhite {
 		r.cc.Mode.SetActiveName("white")
 	} else {
 		r.cc.Mode.SetActiveName("colour")
 		if r.st.Mode == "" {
-			r.st.Mode = device.ModeColour
+			r.st.Mode = dp.ModeColour
 		}
 	}
 
@@ -288,15 +288,15 @@ func (r *sceneDeviceRow) prefill(include bool, st SceneState) {
 // pushes a live preview of the newly selected mode.
 func (r *sceneDeviceRow) onModeChanged() {
 	if r.cc.IsWhite() {
-		r.st.Mode = device.ModeWhite
+		r.st.Mode = dp.ModeWhite
 	} else {
-		r.st.Mode = device.ModeColour
+		r.st.Mode = dp.ModeColour
 	}
 
 	if !r.include.Active() || !r.st.On {
 		return
 	}
-	if r.st.Mode == device.ModeWhite {
+	if r.st.Mode == dp.ModeWhite {
 		r.previewTemp(r.st.Temp)
 	} else {
 		r.previewColour()
@@ -328,9 +328,9 @@ func (r *sceneDeviceRow) previewBrightness(v float64) {
 	// In colour mode brightness is the colour's "v": rewrite the current
 	// selection with the new value in one write. In white mode it is the
 	// dedicated brightness DP.
-	if r.st.Mode == device.ModeColour {
+	if r.st.Mode == dp.ModeColour {
 		rr, gg, bb := hsvToRGBInt(r.st.Hue, r.st.Sat, v/100.0)
-		ctl.async("colour", func(ctx context.Context) error { return ctl.SetColour(ctx, device.RGB{R: rr, G: gg, B: bb}) })
+		ctl.async("colour", func(ctx context.Context) error { return ctl.SetColour(ctx, dp.RGB{R: rr, G: gg, B: bb}) })
 		return
 	}
 	ctl.async("brightness", func(ctx context.Context) error { return ctl.SetWhiteBrightness(ctx, v) })
@@ -364,12 +364,12 @@ func (e *sceneEditor) save() {
 		}
 		st := SceneState{DeviceID: r.deviceID, On: r.power.Active()}
 		if st.On {
-			if r.st.Mode == device.ModeWhite {
-				st.Mode = device.ModeWhite
+			if r.st.Mode == dp.ModeWhite {
+				st.Mode = dp.ModeWhite
 				st.Temp = r.cc.Temp.Value()
 				st.Bright = r.cc.Bright.Value()
 			} else {
-				st.Mode = device.ModeColour
+				st.Mode = dp.ModeColour
 				st.Hue = r.st.Hue
 				st.Sat = r.st.Sat
 				st.Bright = r.cc.Bright.Value()

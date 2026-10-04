@@ -2,30 +2,29 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"sync"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/bulb"
-	"github.com/alex-bluetrain/notuya-go/pkg/device"
-	"github.com/alex-bluetrain/notuya-go/pkg/protocol"
-	"github.com/alex-bluetrain/notuya-go/pkg/protocol35"
+	"github.com/alex-bluetrain/notuya-go/pkg/dp"
+	"github.com/alex-bluetrain/notuya-go/pkg/session"
+	v35 "github.com/alex-bluetrain/notuya-go/pkg/session/v35"
 )
 
 // errLiveStream is returned by withBulb while a music-mode stream owns the
 // bulb: opening a command session beside it would give the bulb two sessions,
 // and Tuya bulbs drop the older one. Callers that need the bulb mid-stream use
-// UpdateLiveDrag instead.
+// UpdateLive instead.
 var errLiveStream = errors.New("live stream active, command refused")
 
 // deviceStatus is the parsed snapshot the desktop app renders per device. It
-// is derived from one device.Status round-trip so a panel refresh costs a
+// is derived from one bulb.Status round-trip so a panel refresh costs a
 // single query.
 type deviceStatus struct {
 	On        bool
-	Mode      string  // device.ModeWhite / ModeColour / ModeScene / music
+	Mode      dp.WorkMode
 	BrightPct float64 // 0-100
 	TempPct   float64 // 0-100 (white mode colour temperature)
 	Hue       float64 // 0-1
@@ -34,7 +33,7 @@ type deviceStatus struct {
 	HasTemp   bool    // DP 23 was present and parseable
 }
 
-// control owns one persistent protocol35 session for a single device and
+// control owns one persistent session for a single device and
 // serializes every command behind a mutex, since a session is not
 // concurrency-safe. The app issues discrete waited commands over this session
 // and only borrows music mode (the streamer) during a live colour drag.
@@ -47,30 +46,36 @@ type deviceStatus struct {
 type control struct {
 	dev Device
 
-	// dial builds a session for dev; a test swaps in a fake. Defaults to
-	// protocol35.NewSession.
-	dial func(addr string, localKey []byte) protocol.Session
+	// dial opens a session for dev; a test swaps in a fake. Defaults to
+	// dialV35.
+	dial dialFunc
 
 	mu   sync.Mutex
-	sess protocol.Session
+	sess session.Session
 	bulb *bulb.Bulb
 
-	// live is a short-lived music-mode streamer borrowed for a colour drag.
+	// live is a music-mode streamer borrowed for a colour drag or Screen Sync.
 	// While non-nil the command session is closed so the bulb only ever has
 	// one session open at a time.
 	live *streamer
 
+	// liveOwner identifies who opened live; only it may update or end it.
+	liveOwner any
+
 	// liveMode is the DP 28 change mode (jump/fade) sent with every
-	// streamed colour during the current drag. Set by BeginLiveDrag.
-	liveMode device.ChangeMode
+	// streamed colour during the current stream. Set by BeginLive.
+	liveMode dp.ChangeMode
 }
 
 func newControl(d Device) *control {
-	return &control{dev: d, dial: dialProtocol35}
+	return &control{dev: d, dial: dialV35}
 }
 
-func dialProtocol35(addr string, localKey []byte) protocol.Session {
-	return protocol35.NewSession(addr, localKey)
+// dialFunc opens (dials and handshakes) a session to one bulb.
+type dialFunc func(ctx context.Context, addr string, localKey []byte) (session.Session, error)
+
+func dialV35(ctx context.Context, addr string, localKey []byte) (session.Session, error) {
+	return v35.Open(ctx, addr, localKey, v35.Options{})
 }
 
 // device returns the device this control currently drives.
@@ -107,14 +112,14 @@ func (c *control) connectLocked(ctx context.Context) error {
 	if c.sess != nil {
 		return nil
 	}
-	sess := c.dial(c.dev.IPAddress, []byte(c.dev.LocalKey))
 	openCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
-	if err := sess.Open(openCtx); err != nil {
+	sess, err := c.dial(openCtx, c.dev.IPAddress, []byte(c.dev.LocalKey))
+	if err != nil {
 		return fmt.Errorf("%s: opening session: %w", c.name(), err)
 	}
 	c.sess = sess
-	c.bulb = bulb.NewBulb(sess, c.name())
+	c.bulb = bulb.New(sess, c.name())
 	return nil
 }
 
@@ -194,43 +199,51 @@ func (c *control) Refresh(ctx context.Context) (deviceStatus, error) {
 	err := c.withBulb(ctx, func(b *bulb.Bulb) error {
 		qctx, cancel := context.WithTimeout(ctx, commandTimeout)
 		defer cancel()
-		dps, err := b.Raw().Status(qctx)
+		s, err := b.Status(qctx)
 		if err != nil {
 			return err
 		}
-		st = parseStatus(dps)
+		st = parseStatus(s)
 		return nil
 	})
 	return st, err
 }
 
-// parseStatus derives a deviceStatus from a raw DP status map. Missing or
-// unparseable DPs leave their fields at zero rather than failing the whole
-// refresh — a scene-mode bulb, say, may not report a colour.
-func parseStatus(dps map[string]json.RawMessage) deviceStatus {
-	var st deviceStatus
+// Seed returns the bulb's current colour for a live stream to start from:
+// its colour when it is on in colour mode, black otherwise. Screen Sync
+// calls it before BeginLive, since status queries are refused once
+// streaming.
+func (c *control) Seed(ctx context.Context) dp.RGB {
+	st, err := c.Refresh(ctx)
+	if err != nil || !st.On || st.Mode != dp.ModeColour {
+		return dp.RGB{}
+	}
+	r, g, b := hsvToRGBInt(st.Hue, st.Sat, st.BrightPct/100)
+	return dp.RGB{R: r, G: g, B: b}
+}
 
-	if raw, ok := dps[device.DPSwitch]; ok {
-		_ = json.Unmarshal(raw, &st.On)
+// parseStatus derives the panel snapshot from a decoded bulb state. DPs the
+// bulb did not report leave their fields at zero — a scene-mode bulb, say,
+// may not report a colour.
+func parseStatus(s dp.State) deviceStatus {
+	sc := s.Schema
+	st := deviceStatus{
+		On:        s.On,
+		Mode:      s.Mode,
+		BrightPct: s.BrightnessPercent(),
+		HasTemp:   s.Has(sc.ColourTempDP),
+		HasColour: s.Has(sc.ColourDP),
 	}
-	if mode, err := device.GetModeFrom(dps); err == nil {
-		st.Mode = mode
+	if st.HasTemp {
+		st.TempPct = s.ColourTempPercent()
 	}
-	if pct, err := device.GetBrightnessPercentFrom(dps); err == nil {
-		st.BrightPct = pct
-	}
-	if pct, err := device.GetColourTempPercentFrom(dps); err == nil {
-		st.TempPct = pct
-		st.HasTemp = true
-	}
-	if h, s, v, err := device.ColourHSVFrom(dps); err == nil {
-		st.Hue = h
-		st.Sat = s
-		st.HasColour = true
+	if st.HasColour {
+		st.Hue = float64(s.Colour.H) / 360
+		st.Sat = float64(s.Colour.S) / 1000
 		// In colour mode brightness is DP 24's V component, not the white-mode
 		// brightness DP (which goes stale when the bulb leaves white mode).
-		if st.Mode == device.ModeColour {
-			st.BrightPct = v * 100
+		if st.Mode == dp.ModeColour {
+			st.BrightPct = float64(s.Colour.V) / 10
 		}
 	}
 	return st
@@ -250,11 +263,11 @@ func (c *control) SetPower(ctx context.Context, on bool) error {
 
 // SetColour switches to colour mode and applies an RGB colour, committing it
 // so it sticks (used on drag release and for discrete colour picks).
-func (c *control) SetColour(ctx context.Context, rgb device.RGB) error {
+func (c *control) SetColour(ctx context.Context, rgb dp.RGB) error {
 	return c.withBulb(ctx, func(b *bulb.Bulb) error {
 		cctx, cancel := context.WithTimeout(ctx, commandTimeout)
 		defer cancel()
-		return b.SetColour(cctx, rgb.R, rgb.G, rgb.B)
+		return b.SetColour(cctx, rgb)
 	})
 }
 
@@ -273,7 +286,7 @@ func (c *control) SetColourTempPercent(ctx context.Context, pct float64) error {
 	return c.withBulb(ctx, func(b *bulb.Bulb) error {
 		cctx, cancel := context.WithTimeout(ctx, commandTimeout)
 		defer cancel()
-		return b.Raw().SetColourTempPercent(cctx, pct, true)
+		return b.SetColourTempPercent(cctx, pct)
 	})
 }
 
@@ -292,10 +305,10 @@ func (c *control) ApplyState(ctx context.Context, st SceneState) error {
 		return err
 	}
 	switch st.Mode {
-	case device.ModeColour:
+	case dp.ModeColour:
 		r, g, b := hsvToRGBInt(st.Hue, st.Sat, st.Bright/100.0)
-		return c.SetColour(ctx, device.RGB{R: r, G: g, B: b})
-	case device.ModeWhite:
+		return c.SetColour(ctx, dp.RGB{R: r, G: g, B: b})
+	case dp.ModeWhite:
 		if err := c.SetColourTempPercent(ctx, st.Temp); err != nil {
 			return err
 		}
@@ -306,53 +319,88 @@ func (c *control) ApplyState(ctx context.Context, st SceneState) error {
 	}
 }
 
-// BeginLiveDrag closes the command session and opens a short-lived music-mode
-// streamer seeded with the current colour, so wheel drags stream smoothly. It
-// is a no-op if a drag is already in progress. Safe to call from the GTK
-// thread — the streamer starts its own goroutines.
-func (c *control) BeginLiveDrag(seed device.RGB, mode device.ChangeMode) {
+// BeginLive closes the command session and opens a music-mode streamer
+// seeded with the current colour, owned by owner (any comparable value
+// identifying the caller: a tab, a scene-editor row, Screen Sync). It is a
+// no-op if owner already streams, and refuses with errLiveStream if someone
+// else does, so a Lights wheel drag cannot hijack or end Screen Sync's stream.
+// Safe to call from the GTK thread — the streamer starts its own goroutines.
+func (c *control) BeginLive(owner any, seed dp.RGB, mode dp.ChangeMode) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.live != nil {
-		return
+		if c.liveOwner == owner {
+			return nil
+		}
+		return fmt.Errorf("%s: %w", c.name(), errLiveStream)
 	}
 	// Hand the single session over to the streamer: close command mode first.
 	c.closeLocked()
+	c.liveOwner = owner
 	c.liveMode = mode
-	c.live = newStreamer([]Device{c.dev}, seed, bulb.StreamOptions{ChangeMode: mode.Ptr()})
+	c.live = newStreamer([]Device{c.dev}, seed, bulb.StreamOptions{ChangeMode: mode.Ptr()}, c.dial)
+	return nil
 }
 
-// SetLiveChangeMode changes the jump/fade mode applied to subsequent
-// UpdateLiveDrag sends without restarting the stream, so the toggle takes
-// effect mid-drag.
-func (c *control) SetLiveChangeMode(mode device.ChangeMode) {
+// SetLiveChangeMode changes the jump/fade mode applied to owner's subsequent
+// UpdateLive sends without restarting the stream, so the toggle takes effect
+// mid-drag.
+func (c *control) SetLiveChangeMode(owner any, mode dp.ChangeMode) {
 	c.mu.Lock()
-	c.liveMode = mode
+	if c.live != nil && c.liveOwner == owner {
+		c.liveMode = mode
+	}
 	c.mu.Unlock()
 }
 
-// UpdateLiveDrag streams a colour during a drag (newest-wins, non-blocking),
-// carrying the drag's current change mode so it takes effect live.
-func (c *control) UpdateLiveDrag(rgb device.RGB) {
+// UpdateLive streams a colour on owner's stream (newest-wins, non-blocking),
+// carrying the current change mode. Ignored when owner does not stream.
+func (c *control) UpdateLive(owner any, rgb dp.RGB) {
 	c.mu.Lock()
 	live := c.live
 	mode := c.liveMode
+	if c.liveOwner != owner {
+		live = nil
+	}
 	c.mu.Unlock()
 	if live != nil {
 		live.Set(rgb, mode.Ptr())
 	}
 }
 
-// EndLiveDrag closes the streamer, which flushes the pending colour and leaves
-// music mode with a normal SetColour so the final colour sticks; the command
-// session then re-opens lazily on the next command. Runs the blocking Close
-// off the caller's control path is the caller's responsibility.
-func (c *control) EndLiveDrag() {
+// EndLive closes owner's streamer, which flushes the pending colour and
+// leaves music mode with a normal SetColour so the final colour sticks; the
+// command session then re-opens lazily on the next command. Ignored when
+// owner does not stream. It blocks up to one command timeout, so call it off
+// the GTK thread.
+func (c *control) EndLive(owner any) {
 	c.mu.Lock()
 	live := c.live
-	c.live = nil
-	c.mu.Unlock()
-	if live != nil {
-		live.Close()
+	if live == nil || c.liveOwner != owner {
+		c.mu.Unlock()
+		return
 	}
+	c.live = nil
+	c.liveOwner = nil
+	c.mu.Unlock()
+	live.Close()
+}
+
+// Streaming reports whether a live stream owns the bulb. Tabs use it to skip
+// or disable a light rather than hit errLiveStream.
+func (c *control) Streaming() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.live != nil
+}
+
+// Dead returns a channel closed when the current live stream's session drops
+// (the stream keeps nothing running after that). Nil when not streaming.
+func (c *control) Dead() <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.live == nil {
+		return nil
+	}
+	return c.live.dead
 }

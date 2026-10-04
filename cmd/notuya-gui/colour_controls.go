@@ -5,7 +5,7 @@ import (
 	"math"
 	"sync"
 
-	"github.com/alex-bluetrain/notuya-go/pkg/device"
+	"github.com/alex-bluetrain/notuya-go/pkg/dp"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/cairo"
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"
@@ -73,9 +73,9 @@ type colourCallbacks struct {
 	// already updated by the component).
 	OnMode func(isWhite bool)
 	// OnDragBegin/Update/End bracket a wheel drag with the current RGB.
-	OnDragBegin  func(rgb device.RGB)
-	OnDragUpdate func(rgb device.RGB)
-	OnDragEnd    func(rgb device.RGB)
+	OnDragBegin  func(rgb dp.RGB)
+	OnDragUpdate func(rgb dp.RGB)
+	OnDragEnd    func(rgb dp.RGB)
 	// OnBright / OnTemp fire on slider moves with the new 0-100 value.
 	OnBright func(v float64)
 	OnTemp   func(v float64)
@@ -244,9 +244,9 @@ func (cc *colourControls) SetHS(h, s float64) {
 
 // SelRGB is the current wheel selection at full value. Brightness is a
 // separate control and is deliberately not mixed in.
-func (cc *colourControls) SelRGB() device.RGB {
+func (cc *colourControls) SelRGB() dp.RGB {
 	r, g, b := hsvToRGBInt(cc.hue, cc.sat, 1.0)
-	return device.RGB{R: r, G: g, B: b}
+	return dp.RGB{R: r, G: g, B: b}
 }
 
 // setSelection updates hue/sat from wheel coordinates (compensating for the
@@ -337,17 +337,17 @@ func newModeToggle(onChange func(isWhite bool)) *adw.ToggleGroup {
 // change mode. Toggle names are the modes' String() forms, so
 // changeModeOf/setChangeMode round-trip through them. onChange fires on
 // every switch — including programmatic setChangeMode, so callers guard it.
-func newChangeModeToggle(onChange func(device.ChangeMode)) *adw.ToggleGroup {
+func newChangeModeToggle(onChange func(dp.ChangeMode)) *adw.ToggleGroup {
 	group := adw.NewToggleGroup()
 	group.SetHExpand(true)
 
 	jump := adw.NewToggle()
-	jump.SetName(device.ChangeJump.String())
+	jump.SetName(dp.ChangeJump.String())
 	jump.SetLabel("Instant")
 	group.Add(jump)
 
 	fade := adw.NewToggle()
-	fade.SetName(device.ChangeFade.String())
+	fade.SetName(dp.ChangeFade.String())
 	fade.SetLabel("Smooth")
 	group.Add(fade)
 
@@ -358,15 +358,15 @@ func newChangeModeToggle(onChange func(device.ChangeMode)) *adw.ToggleGroup {
 }
 
 // changeModeOf reads the mode selected in a newChangeModeToggle group.
-func changeModeOf(group *adw.ToggleGroup) device.ChangeMode {
-	if group.ActiveName() == device.ChangeFade.String() {
-		return device.ChangeFade
+func changeModeOf(group *adw.ToggleGroup) dp.ChangeMode {
+	if group.ActiveName() == dp.ChangeFade.String() {
+		return dp.ChangeFade
 	}
-	return device.ChangeJump
+	return dp.ChangeJump
 }
 
 // setChangeMode selects mode in a newChangeModeToggle group.
-func setChangeMode(group *adw.ToggleGroup, mode device.ChangeMode) {
+func setChangeMode(group *adw.ToggleGroup, mode dp.ChangeMode) {
 	group.SetActiveName(mode.String())
 }
 

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/alex-bluetrain/notuya-go/pkg/device"
+	"github.com/alex-bluetrain/notuya-go/pkg/dp"
 )
 
 // stateFromStatus maps a refreshed deviceStatus to a SceneState. An off light
@@ -17,13 +17,13 @@ func stateFromStatus(deviceID string, st deviceStatus) SceneState {
 		return out
 	}
 	switch {
-	case st.Mode == device.ModeColour && st.HasColour:
-		out.Mode = device.ModeColour
+	case st.Mode == dp.ModeColour && st.HasColour:
+		out.Mode = dp.ModeColour
 		out.Hue = st.Hue
 		out.Sat = st.Sat
 		out.Bright = st.BrightPct
-	case st.Mode == device.ModeWhite && st.HasTemp:
-		out.Mode = device.ModeWhite
+	case st.Mode == dp.ModeWhite && st.HasTemp:
+		out.Mode = dp.ModeWhite
 		out.Temp = st.TempPct
 		out.Bright = st.BrightPct
 	}
@@ -51,9 +51,9 @@ func sceneStateColour(st SceneState) (r, g, b uint8) {
 	dim := 0.35 + 0.65*bright
 	scale := func(v uint8) uint8 { return uint8(float64(v) * dim) }
 	switch st.Mode {
-	case device.ModeColour:
+	case dp.ModeColour:
 		return hsvToRGBInt(st.Hue, st.Sat, dim)
-	case device.ModeWhite:
+	case dp.ModeWhite:
 		// temp 0 = warm (2700K-ish), 100 = cool (6500K-ish); lerp between two
 		// representative sRGB whites so the gradient shows the tint difference.
 		t := st.Temp / 100.0
@@ -194,12 +194,13 @@ func sceneGradientCSS(class string, sc Scene) string {
 }
 
 // applyScene fans a scene out to the lights it names, one goroutine per state,
-// off the GTK thread. Stale device_ids (no matching control) are skipped;
-// applying is best-effort, so a per-device failure is logged, not fatal.
+// off the GTK thread. Stale device_ids (no matching control) and lights a
+// live stream owns (Screen Sync) are skipped; applying is best-effort, so a
+// per-device failure is logged, not fatal.
 func applyScene(scene Scene, byID map[string]*control) {
 	for _, st := range scene.States {
 		ctl, ok := byID[st.DeviceID]
-		if !ok {
+		if !ok || ctl.Streaming() {
 			continue
 		}
 		ctl.async("apply scene", func(ctx context.Context) error { return ctl.ApplyState(ctx, st) })

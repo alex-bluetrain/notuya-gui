@@ -8,8 +8,7 @@ import (
 	"time"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/bulb"
-	"github.com/alex-bluetrain/notuya-go/pkg/device"
-	"github.com/alex-bluetrain/notuya-go/pkg/protocol35"
+	"github.com/alex-bluetrain/notuya-go/pkg/dp"
 )
 
 // commandTimeout bounds one device's open handshake and the final
@@ -24,6 +23,12 @@ type streamer struct {
 	targets []*target
 	wg      sync.WaitGroup
 	cancel  context.CancelFunc
+
+	// dead is closed when any device's stream ends on an error (session
+	// dropped, bulb unreachable). A colour drag lasts seconds and ignores it;
+	// Screen Sync runs for hours and restarts the stream.
+	dead     chan struct{}
+	deadOnce sync.Once
 }
 
 type target struct {
@@ -33,10 +38,10 @@ type target struct {
 
 // newStreamer starts a streaming goroutine per device, seeded with the
 // initial colour so music mode is entered without a flicker. opts carries
-// the default change mode and interval.
-func newStreamer(devices []Device, initial device.RGB, opts bulb.StreamOptions) *streamer {
+// the default change mode and interval; dial opens each device's session.
+func newStreamer(devices []Device, initial dp.RGB, opts bulb.StreamOptions, dial dialFunc) *streamer {
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &streamer{cancel: cancel}
+	s := &streamer{cancel: cancel, dead: make(chan struct{})}
 
 	for _, d := range devices {
 		name := d.Name
@@ -55,8 +60,9 @@ func newStreamer(devices []Device, initial device.RGB, opts bulb.StreamOptions) 
 		s.wg.Add(1)
 		go func(d Device, t *target) {
 			defer s.wg.Done()
-			if err := streamDevice(ctx, d, t, opts); err != nil {
+			if err := streamDevice(ctx, dial, d, t, opts); err != nil {
 				fmt.Fprintf(os.Stderr, "notuya-gui: %s -> %v\n", t.name, err)
+				s.deadOnce.Do(func() { close(s.dead) })
 				// Drain so a dead device cannot block the UI thread on
 				// a full channel.
 				for range t.colours {
@@ -69,7 +75,7 @@ func newStreamer(devices []Device, initial device.RGB, opts bulb.StreamOptions) 
 
 // Set broadcasts a colour (with optional per-colour change mode) to every
 // device, newest-wins. Never blocks the caller.
-func (s *streamer) Set(rgb device.RGB, mode *device.ChangeMode) {
+func (s *streamer) Set(rgb dp.RGB, mode *dp.ChangeMode) {
 	for _, t := range s.targets {
 		offer(t.colours, bulb.StreamColour{RGB: rgb, ChangeMode: mode})
 	}
@@ -101,19 +107,18 @@ func offer[T any](ch chan T, v T) {
 	}
 }
 
-// streamDevice opens one session and streams colours to it for the whole
+// streamDevice opens a session to d and streams colours to it for the whole
 // run, then leaves the bulb on the last colour it received.
-func streamDevice(ctx context.Context, d Device, t *target, opts bulb.StreamOptions) error {
-	sess := protocol35.NewSession(d.IPAddress, []byte(d.LocalKey))
-
+func streamDevice(ctx context.Context, dial dialFunc, d Device, t *target, opts bulb.StreamOptions) error {
 	openCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
-	if err := sess.Open(openCtx); err != nil {
+	sess, err := dial(openCtx, d.IPAddress, []byte(d.LocalKey))
+	if err != nil {
 		return err
 	}
 	defer sess.Close()
 
-	b := bulb.NewBulb(sess, t.name)
+	b := bulb.New(sess, t.name)
 
 	// Tap the colour stream to remember the last colour so the bulb can be
 	// left holding it.
@@ -151,7 +156,7 @@ func streamDevice(ctx context.Context, d Device, t *target, opts bulb.StreamOpti
 	// fresh context because ctx is cancelled on close.
 	finalCtx, cancelFinal := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancelFinal()
-	if err := b.SetColour(finalCtx, last.RGB.R, last.RGB.G, last.RGB.B); err != nil {
+	if err := b.SetColour(finalCtx, last.RGB); err != nil {
 		return fmt.Errorf("leaving music mode: %w", err)
 	}
 	return nil

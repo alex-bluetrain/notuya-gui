@@ -6,7 +6,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/alex-bluetrain/notuya-go/pkg/device"
+	"github.com/alex-bluetrain/notuya-go/pkg/dp"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/cairo"
 	coreglib "github.com/diamondburned/gotk4/pkg/glib/v2"
@@ -20,7 +20,7 @@ const lightsWheelSize = 240
 // shared controls (colourControls + transition) whose changes are broadcast to
 // every checked light. It drives the app's per-device control instances
 // (mutex-serialized, shared with the scene editor): the wheel streams through
-// BeginLiveDrag/UpdateLiveDrag/EndLiveDrag, sliders/mode/power go through the
+// BeginLive/UpdateLive/EndLive, sliders/mode/power go through the
 // discrete setters.
 type lightsTab struct {
 	app *desktopApp
@@ -32,7 +32,7 @@ type lightsTab struct {
 	power *adw.SwitchRow
 
 	// current shared mode (colour selection lives in cc)
-	mode string
+	mode dp.WorkMode
 
 	// brightDragging is true while the brightness slider is being dragged in
 	// colour mode with a live music stream open, so setBrightness streams the
@@ -57,13 +57,14 @@ type lightTarget struct {
 	// swatch colour derived from it. hasState is false until the first
 	// refresh lands so the swatch can read as "unknown".
 	state    SceneState
-	col      device.RGB
+	col      dp.RGB
 	hasState bool
+	synced   bool // driven by Screen Sync: locked out here
 }
 
 // buildLightsTab builds the target list on top and the shared controls below. It returns the scrolled widget for the "Lights" tab.
 func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
-	lt := &lightsTab{app: a, mode: device.ModeColour, suppress: true}
+	lt := &lightsTab{app: a, mode: dp.ModeColour, suppress: true}
 
 	body := gtk.NewBox(gtk.OrientationVertical, 12)
 	body.SetMarginTop(18)
@@ -150,23 +151,23 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 			lt.onModeChanged()
 		},
 		// Wheel drag → live preview on every checked light.
-		OnDragBegin: func(rgb device.RGB) {
+		OnDragBegin: func(rgb dp.RGB) {
 			mode := changeModeOf(lt.trans)
 			for _, t := range lt.checked() {
-				t.ctl.BeginLiveDrag(rgb, mode)
+				t.ctl.BeginLive(lt, rgb, mode)
 			}
 		},
-		OnDragUpdate: func(rgb device.RGB) {
+		OnDragUpdate: func(rgb dp.RGB) {
 			for _, t := range lt.checked() {
-				t.ctl.UpdateLiveDrag(rgb)
+				t.ctl.UpdateLive(lt, rgb)
 			}
 			lt.mirrorColour()
 		},
-		OnDragEnd: func(rgb device.RGB) {
+		OnDragEnd: func(rgb dp.RGB) {
 			for _, t := range lt.checked() {
-				t.ctl.UpdateLiveDrag(rgb)
+				t.ctl.UpdateLive(lt, rgb)
 				ctl := t.ctl
-				go ctl.EndLiveDrag()
+				go ctl.EndLive(lt)
 			}
 			lt.mirrorColour()
 		},
@@ -190,15 +191,15 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	// drag setBrightness falls back to a discrete write.
 	brightDrag := gtk.NewGestureDrag()
 	brightDrag.ConnectDragBegin(func(_, _ float64) {
-		if lt.mode != device.ModeColour {
+		if lt.mode != dp.ModeColour {
 			return
 		}
 		v := lt.cc.Bright.Value()
 		r, g, b := hsvToRGBInt(lt.cc.hue, lt.cc.sat, v/100.0)
-		rgb := device.RGB{R: r, G: g, B: b}
+		rgb := dp.RGB{R: r, G: g, B: b}
 		mode := changeModeOf(lt.trans)
 		for _, t := range lt.checked() {
-			t.ctl.BeginLiveDrag(rgb, mode)
+			t.ctl.BeginLive(lt, rgb, mode)
 		}
 		lt.brightDragging = true
 	})
@@ -209,7 +210,7 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 		lt.brightDragging = false
 		for _, t := range lt.checked() {
 			ctl := t.ctl
-			go ctl.EndLiveDrag()
+			go ctl.EndLive(lt)
 		}
 	})
 	lt.cc.Bright.AddController(brightDrag)
@@ -217,16 +218,16 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	// Change-mode toggle (DP 28): Jump snaps to each colour instantly
 	// (steppy); Fade smears one colour into the next. Takes effect live
 	// mid-drag.
-	lt.trans = newChangeModeToggle(func(mode device.ChangeMode) {
+	lt.trans = newChangeModeToggle(func(mode dp.ChangeMode) {
 		if lt.suppress {
 			return
 		}
 		for _, t := range lt.checked() {
-			t.ctl.SetLiveChangeMode(mode)
+			t.ctl.SetLiveChangeMode(lt, mode)
 		}
 	})
 	inner.Append(lt.trans)
-	setChangeMode(lt.trans, device.DefaultChangeMode)
+	setChangeMode(lt.trans, dp.DefaultChangeMode)
 
 	body.Append(controls)
 
@@ -245,6 +246,8 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 	clamp.SetMaximumSize(600)
 	clamp.SetChild(body)
 
+	a.onSyncLock = lt.setSynced
+
 	scroll := gtk.NewScrolledWindow()
 	scroll.SetVExpand(true)
 	scroll.SetChild(clamp)
@@ -255,7 +258,7 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 func (lt *lightsTab) checked() []*lightTarget {
 	var out []*lightTarget
 	for _, t := range lt.targets {
-		if t.ctl != nil && t.check.Active() {
+		if t.ctl != nil && !t.synced && t.check.Active() {
 			out = append(out, t)
 		}
 	}
@@ -266,11 +269,11 @@ func (lt *lightsTab) checked() []*lightTarget {
 // every checked light (visibility is handled by the colourControls).
 func (lt *lightsTab) onModeChanged() {
 	if lt.cc.IsWhite() {
-		lt.mode = device.ModeWhite
+		lt.mode = dp.ModeWhite
 	} else {
-		lt.mode = device.ModeColour
+		lt.mode = dp.ModeColour
 	}
-	if lt.mode == device.ModeWhite {
+	if lt.mode == dp.ModeWhite {
 		lt.setTemp(lt.cc.Temp.Value())
 	} else {
 		lt.setColour()
@@ -319,7 +322,7 @@ func (lt *lightsTab) mirrorChecked(fn func(*SceneState)) {
 func (lt *lightsTab) mirrorColour() {
 	hue, sat, bright := lt.cc.hue, lt.cc.sat, lt.cc.Bright.Value()
 	lt.mirrorChecked(func(s *SceneState) {
-		s.Mode = device.ModeColour
+		s.Mode = dp.ModeColour
 		s.Hue = hue
 		s.Sat = sat
 		s.Bright = bright
@@ -350,12 +353,12 @@ func (lt *lightsTab) setBrightness(v float64) {
 	// carries the fade bit, a discrete SetColour cannot. Outside a drag
 	// (keyboard, click) a discrete write is correct and cheaper. In white mode
 	// brightness is its own DP.
-	if lt.mode == device.ModeColour {
+	if lt.mode == dp.ModeColour {
 		r, g, b := hsvToRGBInt(lt.cc.hue, lt.cc.sat, v/100.0)
-		rgb := device.RGB{R: r, G: g, B: b}
+		rgb := dp.RGB{R: r, G: g, B: b}
 		if lt.brightDragging {
 			for _, t := range lt.checked() {
-				t.ctl.UpdateLiveDrag(rgb)
+				t.ctl.UpdateLive(lt, rgb)
 			}
 			lt.mirrorColour()
 			return
@@ -372,7 +375,7 @@ func (lt *lightsTab) setBrightness(v float64) {
 		ctl.async("brightness", func(ctx context.Context) error { return ctl.SetWhiteBrightness(ctx, v) })
 	}
 	lt.mirrorChecked(func(s *SceneState) {
-		s.Mode = device.ModeWhite
+		s.Mode = dp.ModeWhite
 		s.Bright = v
 	})
 }
@@ -383,7 +386,7 @@ func (lt *lightsTab) setTemp(v float64) {
 		ctl.async("temperature", func(ctx context.Context) error { return ctl.SetColourTempPercent(ctx, v) })
 	}
 	lt.mirrorChecked(func(s *SceneState) {
-		s.Mode = device.ModeWhite
+		s.Mode = dp.ModeWhite
 		s.Temp = v
 	})
 }
@@ -395,7 +398,7 @@ func (lt *lightsTab) setTemp(v float64) {
 // the queries run in parallel; results are marshalled back with IdleAdd.
 func (lt *lightsTab) refreshTargets() {
 	for _, t := range lt.targets {
-		if t.ctl == nil {
+		if t.ctl == nil || t.ctl.Streaming() {
 			continue
 		}
 		t := t
@@ -413,6 +416,29 @@ func (lt *lightsTab) refreshTargets() {
 	}
 }
 
+// setSynced locks out the lights Screen Sync drives and re-reads the ones
+// it released.
+func (lt *lightsTab) setSynced(synced map[string]bool) {
+	released := false
+	for _, t := range lt.targets {
+		if t.ctl == nil {
+			continue
+		}
+		on := synced[t.ctl.dev.DeviceID]
+		if on == t.synced {
+			continue
+		}
+		t.synced = on
+		t.row.SetSensitive(!on)
+		released = released || !on
+		t.repaint()
+	}
+	lt.syncPowerSwitch()
+	if released {
+		lt.refreshTargets()
+	}
+}
+
 // applyStatus paints one row from a fresh device status: the on/off switch, the
 // brightness readout, and the colour swatch. Runs on the GTK thread.
 func (t *lightTarget) applyStatus(st deviceStatus) {
@@ -424,14 +450,16 @@ func (t *lightTarget) applyStatus(st deviceStatus) {
 // repaint redraws the row from t.state: the subtitle reports on/off and
 // brightness, the swatch shows the colour. Runs on the GTK thread.
 func (t *lightTarget) repaint() {
-	if t.state.On {
+	if t.synced {
+		t.row.SetSubtitle("Controlled by Screen Sync")
+	} else if t.state.On {
 		t.row.SetSubtitle(fmt.Sprintf("On · %d%%", int(t.state.Bright+0.5)))
 	} else {
 		t.row.SetSubtitle("Off")
 	}
 
 	r, g, b := sceneStateColour(t.state)
-	t.col = device.RGB{R: r, G: g, B: b}
+	t.col = dp.RGB{R: r, G: g, B: b}
 	t.swatch.QueueDraw()
 }
 

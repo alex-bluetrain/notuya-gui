@@ -33,6 +33,9 @@ func newDevicePanel(ctl *control) *devicePanel {
 // refresh queries the device off-thread and caches its on/off state, then
 // notifies onRefresh on the GTK thread so the Rooms summary recomputes.
 func (p *devicePanel) refresh() {
+	if p.ctl.Streaming() {
+		return
+	}
 	go func() {
 		st, err := p.ctl.Refresh(context.Background())
 		coreglib.IdleAdd(func() {

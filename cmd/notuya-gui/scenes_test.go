@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/alex-bluetrain/notuya-go/pkg/device"
+	"github.com/alex-bluetrain/notuya-go/pkg/dp"
 )
 
 func TestStateFromStatus(t *testing.T) {
@@ -16,25 +16,25 @@ func TestStateFromStatus(t *testing.T) {
 		{
 			name:   "off stores only id+on",
 			id:     "a",
-			status: deviceStatus{On: false, Mode: device.ModeColour, Hue: 0.5, HasColour: true},
+			status: deviceStatus{On: false, Mode: dp.ModeColour, Hue: 0.5, HasColour: true},
 			want:   SceneState{DeviceID: "a", On: false},
 		},
 		{
 			name:   "colour on",
 			id:     "b",
-			status: deviceStatus{On: true, Mode: device.ModeColour, Hue: 0.75, Sat: 0.8, BrightPct: 15, HasColour: true},
-			want:   SceneState{DeviceID: "b", On: true, Mode: device.ModeColour, Hue: 0.75, Sat: 0.8, Bright: 15},
+			status: deviceStatus{On: true, Mode: dp.ModeColour, Hue: 0.75, Sat: 0.8, BrightPct: 15, HasColour: true},
+			want:   SceneState{DeviceID: "b", On: true, Mode: dp.ModeColour, Hue: 0.75, Sat: 0.8, Bright: 15},
 		},
 		{
 			name:   "white on",
 			id:     "c",
-			status: deviceStatus{On: true, Mode: device.ModeWhite, TempPct: 40, BrightPct: 90, HasTemp: true},
-			want:   SceneState{DeviceID: "c", On: true, Mode: device.ModeWhite, Temp: 40, Bright: 90},
+			status: deviceStatus{On: true, Mode: dp.ModeWhite, TempPct: 40, BrightPct: 90, HasTemp: true},
+			want:   SceneState{DeviceID: "c", On: true, Mode: dp.ModeWhite, Temp: 40, Bright: 90},
 		},
 		{
 			name:   "colour mode without colour data leaves mode empty",
 			id:     "d",
-			status: deviceStatus{On: true, Mode: device.ModeColour, HasColour: false},
+			status: deviceStatus{On: true, Mode: dp.ModeColour, HasColour: false},
 			want:   SceneState{DeviceID: "d", On: true},
 		},
 	}

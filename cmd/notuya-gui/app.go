@@ -35,6 +35,11 @@ type desktopApp struct {
 	// without re-deriving the mapping.
 	byID map[string]*control
 
+	// sync is the Screen Sync tab; onSyncLock tells the Lights tab which
+	// lights the running sync drives.
+	sync       *syncTab
+	onSyncLock func(synced map[string]bool)
+
 	// scenesFlow + scenesStatus back the Scenes tab; the tile grid is rebuilt
 	// on every change.
 	scenesFlow   *gtk.FlowBox
@@ -106,6 +111,7 @@ func (a *desktopApp) activate() {
 	if roomsTabEnabled {
 		stack.AddTitledWithIcon(a.buildRoomsTab(), "rooms", "Rooms", "user-home-symbolic")
 	}
+	stack.AddTitledWithIcon(a.buildScreenSyncTab(), "sync", "Screen Sync", "video-display-symbolic")
 	stack.AddTitledWithIcon(a.buildSettingsTab(), "settings", "Settings", "emblem-system-symbolic")
 	stack.SetVisibleChildName("scenes")
 
@@ -128,6 +134,7 @@ func (a *desktopApp) activate() {
 	// clean, complete shutdown. We must NOT also call app.Quit() here —
 	// that double-releases the use count and trips a GLib assertion.
 	window.ConnectCloseRequest(func() bool {
+		a.sync.shutdown()
 		a.closeControls()
 		return false // allow the window to close; the app quits with it
 	})
@@ -428,7 +435,7 @@ func (a *desktopApp) syncManageSubtitle(idx int) {
 
 // persistRooms writes the current config to disk and reports status.
 func (a *desktopApp) persistRooms(okMsg string) {
-	if err := saveConfig(a.configPath, a.cfg.Devices, a.cfg.Rooms, a.cfg.Scenes); err != nil {
+	if err := saveConfig(a.configPath, a.cfg.Devices, a.cfg.Rooms, a.cfg.Scenes, a.cfg.ScreenSync); err != nil {
 		a.setRoomStatus("Save failed: " + err.Error())
 		return
 	}
@@ -701,7 +708,7 @@ func (a *desktopApp) doDeleteSceneAt(i int) {
 // saveCfg writes the full (devices, rooms, scenes) triple from a.cfg — the
 // single source of truth shared by the scenes and settings tabs.
 func (a *desktopApp) saveCfg() error {
-	return saveConfig(a.configPath, a.cfg.Devices, a.cfg.Rooms, a.cfg.Scenes)
+	return saveConfig(a.configPath, a.cfg.Devices, a.cfg.Rooms, a.cfg.Scenes, a.cfg.ScreenSync)
 }
 
 // closeControls tears down every device session. We don't Release() the app:

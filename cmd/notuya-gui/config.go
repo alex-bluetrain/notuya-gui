@@ -1,11 +1,14 @@
 package main
 
 import (
+	"github.com/alex-bluetrain/notuya-go/pkg/dp"
+
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 // Device is one entry of the `devices` array in config.json — the only part
@@ -32,13 +35,13 @@ type Room struct {
 // are omitted from JSON. Hue and Sat are stored in 0-1 units (matching
 // deviceStatus) to avoid round-trip drift; Bright and Temp are 0-100 percents.
 type SceneState struct {
-	DeviceID string  `json:"device_id"`
-	On       bool    `json:"on"`
-	Mode     string  `json:"mode,omitempty"`   // device.ModeColour / ModeWhite
-	Hue      float64 `json:"hue,omitempty"`    // 0-1 (colour mode)
-	Sat      float64 `json:"sat,omitempty"`    // 0-1 (colour mode)
-	Bright   float64 `json:"bright,omitempty"` // 0-100
-	Temp     float64 `json:"temp,omitempty"`   // 0-100 (white mode)
+	DeviceID string      `json:"device_id"`
+	On       bool        `json:"on"`
+	Mode     dp.WorkMode `json:"mode,omitempty"`
+	Hue      float64     `json:"hue,omitempty"`    // 0-1 (colour mode)
+	Sat      float64     `json:"sat,omitempty"`    // 0-1 (colour mode)
+	Bright   float64     `json:"bright,omitempty"` // 0-100
+	Temp     float64     `json:"temp,omitempty"`   // 0-100 (white mode)
 }
 
 // Scene is a named, software-only snapshot: applying it fans out discrete
@@ -51,9 +54,55 @@ type Scene struct {
 
 // Config is the subset of config.json this tool cares about.
 type Config struct {
-	Devices []Device `json:"devices"`
-	Rooms   []Room   `json:"rooms"`
-	Scenes  []Scene  `json:"scenes"`
+	Devices    []Device    `json:"devices"`
+	Rooms      []Room      `json:"rooms"`
+	Scenes     []Scene     `json:"scenes"`
+	ScreenSync *ScreenSync `json:"screenSync,omitempty"`
+}
+
+// ScreenSync holds the Screen Sync presets. Brightness scales every region
+// colour (0.25-2.0); zero means unset and reads as 1.
+type ScreenSync struct {
+	Brightness float64      `json:"brightness"`
+	Presets    []SyncPreset `json:"presets"`
+}
+
+// SyncPreset is a capture target and the regions drawn on it.
+type SyncPreset struct {
+	ID     string     `json:"id"`
+	Name   string     `json:"name"`
+	Target SyncTarget `json:"target"`
+	// RestoreTokens are portal tokens that skip the share picker, keyed by
+	// monitor connector or "window".
+	RestoreTokens map[string]string `json:"restoreTokens,omitempty"`
+	Regions       []SyncRegion      `json:"regions"`
+}
+
+// SyncTarget is what a preset captures: Kind "monitors" or "window".
+type SyncTarget struct {
+	Kind        string   `json:"kind"`
+	Monitors    []string `json:"monitors,omitempty"`
+	WindowClass string   `json:"windowClass,omitempty"`
+	TitleMatch  string   `json:"titleMatch,omitempty"`
+}
+
+// SyncRegion is a rectangle normalised to the target canvas (x, y, w, h)
+// and the lights it drives. A light belongs to at most one region of a
+// preset.
+type SyncRegion struct {
+	ID      string     `json:"id"`
+	Name    string     `json:"name"`
+	Rect    [4]float64 `json:"rect"`
+	Devices []string   `json:"devices"`
+}
+
+// bind gives region idx the light id, taking it from any other region of
+// the preset (bindings are exclusive).
+func (p *SyncPreset) bind(idx int, id string) {
+	for i := range p.Regions {
+		p.Regions[i].Devices = slices.DeleteFunc(p.Regions[i].Devices, func(d string) bool { return d == id })
+	}
+	p.Regions[idx].Devices = append(p.Regions[idx].Devices, id)
 }
 
 // roomGroup is a resolved room: its name and the devices it contains, in the
@@ -138,12 +187,12 @@ func loadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// saveConfig writes devices, rooms and scenes back into config.json at path,
+// saveConfig writes devices, rooms, scenes and (when non-nil) screenSync back into config.json at path,
 // preserving every other top-level key (wallpaper_sync, theme keys, anything other
 // tools own) by round-tripping the file through a map of raw messages. The
 // write is atomic: a temp file is written then renamed over path, so a crash
 // mid-write can't corrupt the shared config.
-func saveConfig(path string, devices []Device, rooms []Room, scenes []Scene) error {
+func saveConfig(path string, devices []Device, rooms []Room, scenes []Scene, sync *ScreenSync) error {
 	root := map[string]json.RawMessage{}
 	if data, err := os.ReadFile(path); err == nil {
 		if err := json.Unmarshal(data, &root); err != nil {
@@ -179,6 +228,14 @@ func saveConfig(path string, devices []Device, rooms []Room, scenes []Scene) err
 		return fmt.Errorf("config: encoding scenes: %w", err)
 	}
 	root["scenes"] = scenesJSON
+
+	if sync != nil {
+		syncJSON, err := marshalNoEscape(sync)
+		if err != nil {
+			return fmt.Errorf("config: encoding screenSync: %w", err)
+		}
+		root["screenSync"] = syncJSON
+	}
 
 	out, err := marshalNoEscape(root)
 	if err != nil {

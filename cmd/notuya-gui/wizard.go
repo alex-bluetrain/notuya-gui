@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alex-bluetrain/notuya-go/pkg/device"
+	"github.com/alex-bluetrain/notuya-go/pkg/dp"
 	"github.com/alex-bluetrain/notuya-go/pkg/discovery"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
@@ -464,6 +464,14 @@ func (w *wizard) testRow(row *wizardRow) {
 	if row.inFlight {
 		return
 	}
+	// A bulb streaming (Screen Sync) belongs to that stream; testing would
+	// re-point its control under it. The Settings UI disables Test for it.
+	d := deviceFrom(row.dev, row.name, row.keyEntry.Text())
+	if w.shared != nil {
+		if ctl := w.shared(d.DeviceID); ctl != nil && ctl.Streaming() {
+			return
+		}
+	}
 	row.inFlight = true
 	row.icon.SetVisible(false)
 	row.statusSpin.SetVisible(true)
@@ -476,7 +484,6 @@ func (w *wizard) testRow(row *wizardRow) {
 	// bulb), else this row's own. A shared control that was re-pointed at a
 	// key that then fails is restored, so a typo in Settings never breaks the
 	// Lights/Scenes tabs underneath.
-	d := deviceFrom(row.dev, row.name, row.keyEntry.Text())
 	ctl := w.controlFor(row, d)
 	prev := ctl.device()
 	restore := row.shared && prev != d
@@ -513,7 +520,7 @@ func (w *wizard) testRow(row *wizardRow) {
 const wizardFlashHold = 166 * time.Millisecond
 
 // wizardFlashColours is the blink sequence: red and blue alternating.
-var wizardFlashColours = []device.RGB{
+var wizardFlashColours = []dp.RGB{
 	{R: 255, G: 0, B: 0}, // red
 	{R: 0, G: 0, B: 255}, // blue
 	{R: 255, G: 0, B: 0}, // red
@@ -533,12 +540,15 @@ func runWizardTest(ctl *control) error {
 		return err
 	}
 
-	ctl.BeginLiveDrag(wizardFlashColours[0], 0)
+	owner := new(int) // unique token for this test's stream
+	if err := ctl.BeginLive(owner, wizardFlashColours[0], dp.ChangeJump); err != nil {
+		return err
+	}
 	for _, rgb := range wizardFlashColours {
-		ctl.UpdateLiveDrag(rgb)
+		ctl.UpdateLive(owner, rgb)
 		time.Sleep(wizardFlashHold)
 	}
-	ctl.EndLiveDrag()
+	ctl.EndLive(owner)
 	return nil
 }
 
@@ -604,7 +614,7 @@ func (w *wizard) apply() {
 		scenes = w.scenesFn()
 	}
 
-	if err := saveConfig(w.configPath, devices, rooms, scenes); err != nil {
+	if err := saveConfig(w.configPath, devices, rooms, scenes, nil); err != nil {
 		dlg := adw.NewAlertDialog("Couldn't Save Configuration", err.Error())
 		dlg.AddResponse("ok", "OK")
 		if w.window != nil {

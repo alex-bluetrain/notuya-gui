@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/dp"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
@@ -239,8 +238,20 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 
 	lt.cc.ApplyModeVisibility()
 
-	// Seed each target row from its device's live state (off-thread).
-	lt.refreshTargets()
+	// Paint each target row whenever its device (re)connects: at startup,
+	// after a wall-switch power cycle, and after a live stream ends.
+	for _, t := range lt.targets {
+		if t.ctl == nil {
+			continue
+		}
+		t := t
+		t.ctl.Subscribe(func(st deviceStatus) {
+			coreglib.IdleAdd(func() {
+				t.applyStatus(st)
+				lt.syncPowerSwitch()
+			})
+		})
+	}
 
 	clamp := adw.NewClamp()
 	clamp.SetMaximumSize(600)
@@ -393,33 +404,9 @@ func (lt *lightsTab) setTemp(v float64) {
 
 // --- per-light target rows (live state) ---
 
-// refreshTargets queries every target's device once (off the GTK thread) and
-// paints its row from the result. Each target has its own control/session, so
-// the queries run in parallel; results are marshalled back with IdleAdd.
-func (lt *lightsTab) refreshTargets() {
-	for _, t := range lt.targets {
-		if t.ctl == nil || t.ctl.Streaming() {
-			continue
-		}
-		t := t
-		go func() {
-			st, err := t.ctl.Refresh(context.Background())
-			coreglib.IdleAdd(func() {
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "notuya-gui: %s -> %v\n", t.ctl.name(), err)
-					return
-				}
-				t.applyStatus(st)
-				lt.syncPowerSwitch()
-			})
-		}()
-	}
-}
-
-// setSynced locks out the lights Screen Sync drives and re-reads the ones
-// it released.
+// setSynced locks out the lights Screen Sync drives. Released lights are
+// re-read by their control's link keeper once the stream ends.
 func (lt *lightsTab) setSynced(synced map[string]bool) {
-	released := false
 	for _, t := range lt.targets {
 		if t.ctl == nil {
 			continue
@@ -430,13 +417,9 @@ func (lt *lightsTab) setSynced(synced map[string]bool) {
 		}
 		t.synced = on
 		t.row.SetSensitive(!on)
-		released = released || !on
 		t.repaint()
 	}
 	lt.syncPowerSwitch()
-	if released {
-		lt.refreshTargets()
-	}
 }
 
 // applyStatus paints one row from a fresh device status: the on/off switch, the

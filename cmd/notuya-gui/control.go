@@ -65,10 +65,14 @@ type control struct {
 	// liveMode is the DP 28 change mode (jump/fade) sent with every
 	// streamed colour during the current stream. Set by BeginLive.
 	liveMode dp.ChangeMode
+
+	// keep holds the link keeper's state (see keeper.go). Only the app
+	// starts it; the wizard's controls stay lazy.
+	keep *keeper
 }
 
 func newControl(d Device) *control {
-	return &control{dev: d, dial: dialV35}
+	return &control{dev: d, dial: dialV35, keep: newKeeper()}
 }
 
 // dialFunc opens (dials and handshakes) a session to one bulb.
@@ -97,6 +101,7 @@ func (c *control) reconfigure(d Device) {
 	}
 	c.closeLocked()
 	c.dev = d
+	c.keep.poke()
 }
 
 // name returns a human label for logs and the panel header.
@@ -186,8 +191,10 @@ func (c *control) async(what string, fn func(ctx context.Context) error) {
 	}()
 }
 
-// Close tears down the session. Safe to call more than once.
+// Close stops the link keeper and tears down the session. Safe to call more
+// than once.
 func (c *control) Close() {
+	c.keep.halt()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closeLocked()
@@ -384,6 +391,7 @@ func (c *control) EndLive(owner any) {
 	c.liveOwner = nil
 	c.mu.Unlock()
 	live.Close()
+	c.keep.poke() // reconnect and re-read the state the stream left behind
 }
 
 // Streaming reports whether a live stream owns the bulb. Tabs use it to skip

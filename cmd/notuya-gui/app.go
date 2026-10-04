@@ -141,9 +141,14 @@ func (a *desktopApp) activate() {
 
 	window.Present()
 
-	// Populate the Rooms tab's panels (if any) with live device state.
+	// Rooms panels follow their device's state; then start every link
+	// keeper, which connects, publishes the first snapshot to all tabs, and
+	// reconnects whenever a bulb drops off (wall switch, outage).
 	for _, panel := range a.panels {
-		panel.refresh()
+		panel.subscribe()
+	}
+	for _, ctl := range a.controls {
+		ctl.Start()
 	}
 }
 

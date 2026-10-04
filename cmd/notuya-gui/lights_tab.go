@@ -316,7 +316,7 @@ func (lt *lightsTab) syncPowerSwitch() {
 
 // mirrorChecked applies fn to every checked row's cached state and repaints
 // it, so the target list follows what was just broadcast without querying any
-// device. Rows that never got a first refresh (device unreachable) are left
+// device. Rows that never got a first status (device unreachable) are left
 // alone rather than shown a state they may not have taken.
 func (lt *lightsTab) mirrorChecked(fn func(*SceneState)) {
 	for _, t := range lt.checked() {
@@ -446,7 +446,7 @@ func (t *lightTarget) repaint() {
 }
 
 // drawSwatch paints this light's current colour as a small rounded square, or a
-// muted placeholder before the first refresh lands.
+// muted placeholder before the first status lands.
 func (t *lightTarget) drawSwatch(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
 	w, h := float64(width), float64(height)
 	roundedRect(cr, 0, 0, w, h, 5)

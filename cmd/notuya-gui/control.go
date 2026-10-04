@@ -206,13 +206,15 @@ func isDead(sess session.Session) bool {
 
 // async runs one bounded device command off the GTK thread, so a slow or
 // unreachable bulb never stalls the UI. The UI has already updated
-// optimistically and the next refresh reconciles, so a failure is only logged.
+// optimistically; on failure the keeper is poked to re-read and publish the
+// bulb's real state, which puts the UI right.
 func (c *control) async(what string, fn func(ctx context.Context) error) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 		defer cancel()
 		if err := fn(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "notuya-gui: %s %s: %v\n", c.name(), what, err)
+			c.keep.poke()
 		}
 	}()
 }
@@ -226,13 +228,12 @@ func (c *control) Close() {
 	c.closeLocked()
 }
 
-// Refresh queries the device once and parses a deviceStatus snapshot.
+// Refresh queries the device once and parses a deviceStatus snapshot. Like
+// every command, it is bounded by the caller's ctx.
 func (c *control) Refresh(ctx context.Context) (deviceStatus, error) {
 	var st deviceStatus
 	err := c.withBulb(ctx, func(b *bulb.Bulb) error {
-		qctx, cancel := context.WithTimeout(ctx, commandTimeout)
-		defer cancel()
-		s, err := b.Status(qctx)
+		s, err := b.Status(ctx)
 		if err != nil {
 			return err
 		}
@@ -284,12 +285,10 @@ func parseStatus(s dp.State) deviceStatus {
 // SetPower turns the bulb on or off.
 func (c *control) SetPower(ctx context.Context, on bool) error {
 	return c.withBulb(ctx, func(b *bulb.Bulb) error {
-		cctx, cancel := context.WithTimeout(ctx, commandTimeout)
-		defer cancel()
 		if on {
-			return b.TurnOn(cctx)
+			return b.TurnOn(ctx)
 		}
-		return b.TurnOff(cctx)
+		return b.TurnOff(ctx)
 	})
 }
 
@@ -297,18 +296,14 @@ func (c *control) SetPower(ctx context.Context, on bool) error {
 // so it sticks (used on drag release and for discrete colour picks).
 func (c *control) SetColour(ctx context.Context, rgb dp.RGB) error {
 	return c.withBulb(ctx, func(b *bulb.Bulb) error {
-		cctx, cancel := context.WithTimeout(ctx, commandTimeout)
-		defer cancel()
-		return b.SetColour(cctx, rgb)
+		return b.SetColour(ctx, rgb)
 	})
 }
 
 // SetWhiteBrightness switches to white mode and sets brightness (DP 22).
 func (c *control) SetWhiteBrightness(ctx context.Context, pct float64) error {
 	return c.withBulb(ctx, func(b *bulb.Bulb) error {
-		cctx, cancel := context.WithTimeout(ctx, commandTimeout)
-		defer cancel()
-		return b.SetWhiteBrightness(cctx, pct)
+		return b.SetWhiteBrightness(ctx, pct)
 	})
 }
 
@@ -316,9 +311,7 @@ func (c *control) SetWhiteBrightness(ctx context.Context, pct float64) error {
 // a cold↔warm percentage (the DP is a raw 0-1000 scale, not Kelvin).
 func (c *control) SetColourTempPercent(ctx context.Context, pct float64) error {
 	return c.withBulb(ctx, func(b *bulb.Bulb) error {
-		cctx, cancel := context.WithTimeout(ctx, commandTimeout)
-		defer cancel()
-		return b.SetColourTempPercent(cctx, pct)
+		return b.SetColourTempPercent(ctx, pct)
 	})
 }
 

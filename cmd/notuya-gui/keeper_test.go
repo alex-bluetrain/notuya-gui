@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -144,4 +145,39 @@ func TestReconfigureWhileKeeperRunsIsRaceFree(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	<-done
+}
+
+// rejectSession is a healthy link whose writes the bulb rejects.
+type rejectSession struct{ *linkSession }
+
+func (rejectSession) Control(context.Context, []byte, bool) error { return errors.New("rejected") }
+
+// A failed async command leaves the optimistic UI wrong, so the keeper must
+// re-read and republish the bulb's real state without redialling.
+func TestFailedAsyncCommandRepublishesStatus(t *testing.T) {
+	c := newControl(Device{DeviceID: "dev1", IPAddress: "127.0.0.1", LocalKey: "0123456789abcdef"})
+	var dials atomic.Int32
+	c.dial = func(context.Context, string, []byte) (session.Session, error) {
+		dials.Add(1)
+		return rejectSession{newLinkSession()}, nil
+	}
+	got := make(chan deviceStatus, 4)
+	c.Subscribe(func(st deviceStatus) { got <- st })
+	c.Start()
+	defer c.Close()
+
+	wait := func(what string) {
+		t.Helper()
+		select {
+		case <-got:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no status published %s", what)
+		}
+	}
+	wait("on connect")
+	c.async("power", func(ctx context.Context) error { return c.SetPower(ctx, false) })
+	wait("after the command failed")
+	if n := dials.Load(); n != 1 {
+		t.Fatalf("dials = %d, want 1 (a rejected command keeps the link)", n)
+	}
 }

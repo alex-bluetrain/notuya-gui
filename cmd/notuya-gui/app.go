@@ -49,7 +49,7 @@ type desktopApp struct {
 	scenesCSS *gtk.CSSProvider
 
 	// roomRows backs the Rooms tab's control section: one summary row per
-	// room, updated live as member panels refresh or are toggled.
+	// room, updated live as member panels get a status or are toggled.
 	roomRows []*roomRow
 
 	// Room-management widgets (moved out of the Settings tab). manageGroup
@@ -189,7 +189,7 @@ func (a *desktopApp) buildRoomsTab() *gtk.ScrolledWindow {
 			}
 			a.groupPower(rr.members, state)
 			// Optimistically reflect the new state in each member panel's
-			// switch and the summary; a later refresh reconciles.
+			// switch and the summary; a failed command makes the keeper republish.
 			for _, p := range rr.members {
 				p.setPowerOptimistic(state)
 			}
@@ -198,7 +198,7 @@ func (a *desktopApp) buildRoomsTab() *gtk.ScrolledWindow {
 		})
 		rr.row.AddSuffix(rr.toggle)
 
-		// When any member panel refreshes or is toggled, recompute this
+		// When any member panel gets a status or is toggled, recompute this
 		// room's summary.
 		for _, p := range members {
 			prevStatus := p.onStatus

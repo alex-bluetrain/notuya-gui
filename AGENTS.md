@@ -45,10 +45,12 @@ Everything is under `cmd/notuya-gui/` (plus `internal/screensync/`):
 - Sessions come from `session/v35.Open`; bulbs are driven via `bulb.Bulb` and
   `dp` types. Each bulb's session is **held open** by its keeper. The
   session's own idle heartbeat keeps the link alive and a socket error
-  closes `Done()`; the keeper also sends a waited heartbeat every 10s and
-  redials with 1s–10s backoff when the link is dead.
+  closes `Done()`, but a bulb that loses power never errors the socket: the
+  keeper's waited heartbeat every 10s is what notices. It redials with
+  1s–10s backoff when the link is dead.
 - Tabs **listen, never poll**: Lights rows and Rooms panels `Subscribe` to
-  the status the keeper publishes on every (re)connect.
+  the status the keeper publishes on every (re)connect and after a failed
+  command.
 - Commands may run concurrently over the session; `c.mu` guards only the
   control's fields and the dial. Live colour drags and Screen Sync borrow
   the bulb via the streamer (DP 28), which closes the command session; the
@@ -72,3 +74,5 @@ Everything is under `cmd/notuya-gui/` (plus `internal/screensync/`):
    `$NOTUYA_CONFIG`) without explicit approval.
 4. **Test the GUI via AT-SPI, not screenshots** — `scripts/uitest.py` (use the
    `cage` subcommand for isolated capture, never the live desktop).
+   `scripts/synctest.py` runs the Screen Sync suite on top of it, in a nested
+   cage with a temp config and fake bulbs.

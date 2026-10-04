@@ -70,7 +70,8 @@ builds are fast.
    which; *Apply* saves your setup.
 
 After that, use **Lights** for everyday control, **Scenes** to save and recall
-looks, and **Settings** to add bulbs or update keys.
+looks, **Screen Sync** to drive bulbs from your screen, and **Settings** to add
+bulbs or update keys.
 
 ## Troubleshooting
 

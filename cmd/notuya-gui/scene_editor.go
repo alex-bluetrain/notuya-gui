@@ -329,8 +329,8 @@ func (r *sceneDeviceRow) previewBrightness(v float64) {
 	// selection with the new value in one write. In white mode it is the
 	// dedicated brightness DP.
 	if r.st.Mode == dp.ModeColour {
-		rr, gg, bb := hsvToRGBInt(r.st.Hue, r.st.Sat, v/100.0)
-		ctl.async("colour", func(ctx context.Context) error { return ctl.SetColour(ctx, dp.RGB{R: rr, G: gg, B: bb}) })
+		rgb := hsvRGB(r.st.Hue, r.st.Sat, v/100.0)
+		ctl.async("colour", func(ctx context.Context) error { return ctl.SetColour(ctx, rgb) })
 		return
 	}
 	ctl.async("brightness", func(ctx context.Context) error { return ctl.SetWhiteBrightness(ctx, v) })

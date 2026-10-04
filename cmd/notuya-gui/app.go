@@ -161,7 +161,7 @@ func (a *desktopApp) buildRoomsTab() *gtk.ScrolledWindow {
 	for _, ctl := range a.controls {
 		panel := newDevicePanel(ctl)
 		a.panels = append(a.panels, panel)
-		byID[ctl.dev.DeviceID] = panel
+		byID[ctl.device().DeviceID] = panel
 	}
 
 	group := adw.NewPreferencesGroup()
@@ -201,10 +201,10 @@ func (a *desktopApp) buildRoomsTab() *gtk.ScrolledWindow {
 		// When any member panel refreshes or is toggled, recompute this
 		// room's summary.
 		for _, p := range members {
-			prevRefresh := p.onRefresh
-			p.onRefresh = func() {
-				if prevRefresh != nil {
-					prevRefresh()
+			prevStatus := p.onStatus
+			p.onStatus = func() {
+				if prevStatus != nil {
+					prevStatus()
 				}
 				rr.updateSummary()
 			}

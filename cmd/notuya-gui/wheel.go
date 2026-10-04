@@ -32,12 +32,12 @@ func generateWheelBytes(size, stride int) []byte {
 				hue += 1.0
 			}
 			sat := dist / radius
-			r, g, b := hsvToRGB(hue, sat, 1.0)
+			c := hsvRGB(hue, sat, 1.0)
 			off := rowOff + x*4
-			buf[off] = byte(int(b * 255))   // B
-			buf[off+1] = byte(int(g * 255)) // G
-			buf[off+2] = byte(int(r * 255)) // R
-			buf[off+3] = 255                // A
+			buf[off] = c.B   // B
+			buf[off+1] = c.G // G
+			buf[off+2] = c.R // R
+			buf[off+3] = 255 // A
 		}
 	}
 	return buf

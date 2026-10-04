@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -109,4 +110,38 @@ func TestKeeperIdlesWhileStreamingAndRereadsAfter(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no status re-read after the stream ended")
 	}
+}
+
+// Settings' Test re-keys a device while its keeper runs and the GTK thread
+// reads the device's name for banners and its ID for Screen Sync's lockout.
+func TestReconfigureWhileKeeperRunsIsRaceFree(t *testing.T) {
+	c := newControl(Device{DeviceID: "dev1", Name: "Desk"})
+	fail := true
+	var mu sync.Mutex
+	c.dial = func(context.Context, string, []byte) (session.Session, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		fail = !fail // alternate so the keeper logs "unreachable"/"reconnected"
+		if fail {
+			return nil, errors.New("unreachable")
+		}
+		s := newLinkSession()
+		s.drop()
+		return s, nil
+	}
+	c.Start()
+	defer c.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 200 {
+			_ = deviceName(c.device())
+			_ = c.device().DeviceID
+		}
+	}()
+	for i := range 50 {
+		c.reconfigure(Device{DeviceID: "dev1", Name: fmt.Sprintf("Desk %d", i)})
+		time.Sleep(time.Millisecond)
+	}
+	<-done
 }

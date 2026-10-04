@@ -19,9 +19,9 @@ import (
 // UpdateLive instead.
 var errLiveStream = errors.New("live stream active, command refused")
 
-// deviceStatus is the parsed snapshot the desktop app renders per device. It
-// is derived from one bulb.Status round-trip so a panel refresh costs a
-// single query.
+// deviceStatus is the parsed snapshot the desktop app renders per device,
+// derived from one bulb.Status round-trip. The keeper publishes one on every
+// (re)connect.
 type deviceStatus struct {
 	On        bool
 	Mode      dp.WorkMode
@@ -33,10 +33,11 @@ type deviceStatus struct {
 	HasTemp   bool    // DP 23 was present and parseable
 }
 
-// control owns one persistent session for a single device and
-// serializes every command behind a mutex, since a session is not
-// concurrency-safe. The app issues discrete waited commands over this session
-// and only borrows a live stream (the streamer) during a live colour drag.
+// control owns one persistent session for a single device. Its keeper holds
+// the session open and redials it when the link drops. Commands run
+// concurrently over the session; c.mu guards only the fields below and the
+// dial. A live colour drag or Screen Sync borrows the bulb through a streamer,
+// which closes the command session for the stream's lifetime.
 //
 // It is the bulb's single channel for the whole app: every tab (Lights,
 // Scenes, the scene editor, Settings' Test) must drive a device through the
@@ -104,13 +105,17 @@ func (c *control) reconfigure(d Device) {
 	c.keep.poke()
 }
 
-// name returns a human label for logs and the panel header.
-func (c *control) name() string {
-	if c.dev.Name != "" {
-		return c.dev.Name
+// deviceName is a human label for logs and banners.
+func deviceName(d Device) string {
+	if d.Name != "" {
+		return d.Name
 	}
-	return c.dev.DeviceID
+	return d.DeviceID
 }
+
+// name is deviceName for callers not holding c.mu (the keeper, async
+// commands, the GTK thread); locked code uses deviceName(c.dev).
+func (c *control) name() string { return deviceName(c.device()) }
 
 // connect lazily opens the session (idempotent). The caller must hold c.mu.
 func (c *control) connectLocked(ctx context.Context) error {
@@ -121,10 +126,10 @@ func (c *control) connectLocked(ctx context.Context) error {
 	defer cancel()
 	sess, err := c.dial(openCtx, c.dev.IPAddress, []byte(c.dev.LocalKey))
 	if err != nil {
-		return fmt.Errorf("%s: opening session: %w", c.name(), err)
+		return fmt.Errorf("%s: opening session: %w", deviceName(c.dev), err)
 	}
 	c.sess = sess
-	c.bulb = bulb.New(sess, c.name())
+	c.bulb = bulb.New(sess, deviceName(c.dev))
 	return nil
 }
 
@@ -138,41 +143,53 @@ func (c *control) closeLocked() {
 	}
 }
 
-// withBulb runs fn against the connected bulb under the mutex, opening the
-// session first if needed. All device I/O funnels through here so a single
-// session is never touched concurrently.
-//
-// It refuses to run while a live stream owns the bulb (errLiveStream). A
-// failing command drops the session so the next command reconnects: a session
-// the bulb has silently dropped (another connection won, the bulb rebooted)
-// otherwise fails forever. When the session already existed before this call
-// and the caller's context is still alive, it reconnects and retries once
-// right away, so a stale session costs one handshake rather than one lost
-// command.
-func (c *control) withBulb(ctx context.Context, fn func(b *bulb.Bulb) error) error {
+// acquire returns the connected bulb, dialling first if needed, and whether
+// the session already existed before this call. Only the lookup and the dial
+// hold c.mu; the command itself runs outside it, since a session is safe for
+// concurrent use.
+func (c *control) acquire(ctx context.Context) (session.Session, *bulb.Bulb, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.live != nil {
-		return fmt.Errorf("%s: %w", c.name(), errLiveStream)
+		return nil, nil, false, fmt.Errorf("%s: %w", deviceName(c.dev), errLiveStream)
 	}
-	stale := c.sess != nil
+	existed := c.sess != nil
 	if err := c.connectLocked(ctx); err != nil {
+		return nil, nil, false, err
+	}
+	return c.sess, c.bulb, existed, nil
+}
+
+// withBulb runs fn against the connected bulb, opening the session first if
+// needed. Commands may overlap; the session matches each reply to its request.
+//
+// It refuses to run while a live stream owns the bulb (errLiveStream). A
+// failing command drops its session (if it is still the current one) so the
+// next command reconnects. When the session already existed and the caller's
+// context is still alive, it reconnects and retries once right away. The
+// keeper would redial too, but only after its next probe; the retry keeps a
+// command issued in those seconds from being lost. Reconnecting the keeper
+// itself goes through here as well (it calls Refresh), so there is one dial
+// path.
+func (c *control) withBulb(ctx context.Context, fn func(b *bulb.Bulb) error) error {
+	sess, b, existed, err := c.acquire(ctx)
+	if err != nil {
 		return err
 	}
-	err := fn(c.bulb)
-	if err == nil {
+	if err = fn(b); err == nil {
 		return nil
 	}
-	c.closeLocked()
-	if !stale || ctx.Err() != nil {
+	c.dropSession(sess)
+	if !existed || ctx.Err() != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "notuya-gui: %s: reconnecting after %v\n", c.name(), err)
-	if rerr := c.connectLocked(ctx); rerr != nil {
+	sess, b, _, rerr := c.acquire(ctx)
+	if rerr != nil {
 		return rerr
 	}
-	if rerr := fn(c.bulb); rerr != nil {
-		c.closeLocked()
+	if rerr = fn(b); rerr != nil {
+		c.dropSession(sess)
 		return rerr
 	}
 	return nil
@@ -225,8 +242,7 @@ func (c *control) Seed(ctx context.Context) dp.RGB {
 	if err != nil || !st.On || st.Mode != dp.ModeColour {
 		return dp.RGB{}
 	}
-	r, g, b := hsvToRGBInt(st.Hue, st.Sat, st.BrightPct/100)
-	return dp.RGB{R: r, G: g, B: b}
+	return hsvRGB(st.Hue, st.Sat, st.BrightPct/100)
 }
 
 // parseStatus derives the panel snapshot from a decoded bulb state. DPs the
@@ -313,8 +329,7 @@ func (c *control) ApplyState(ctx context.Context, st SceneState) error {
 	}
 	switch st.Mode {
 	case dp.ModeColour:
-		r, g, b := hsvToRGBInt(st.Hue, st.Sat, st.Bright/100.0)
-		return c.SetColour(ctx, dp.RGB{R: r, G: g, B: b})
+		return c.SetColour(ctx, hsvRGB(st.Hue, st.Sat, st.Bright/100.0))
 	case dp.ModeWhite:
 		if err := c.SetColourTempPercent(ctx, st.Temp); err != nil {
 			return err
@@ -339,7 +354,7 @@ func (c *control) BeginLive(owner any, seed dp.RGB, mode dp.ChangeMode) error {
 		if c.liveOwner == owner {
 			return nil
 		}
-		return fmt.Errorf("%s: %w", c.name(), errLiveStream)
+		return fmt.Errorf("%s: %w", deviceName(c.dev), errLiveStream)
 	}
 	// Hand the single session over to the streamer: close command mode first.
 	c.closeLocked()
@@ -376,8 +391,8 @@ func (c *control) UpdateLive(owner any, rgb dp.RGB) {
 }
 
 // EndLive closes owner's streamer, which flushes the pending colour and
-// re-sends it with a normal SetColour so the final colour sticks; the
-// command session then re-opens lazily on the next command. Ignored when
+// re-sends it with a normal SetColour so the final colour sticks, then
+// pokes the keeper, which redials the command session and re-reads state. Ignored when
 // owner does not stream. It blocks up to one command timeout, so call it off
 // the GTK thread.
 func (c *control) EndLive(owner any) {

@@ -307,3 +307,48 @@ func TestDeadStaysOpenWhileStreamIsHealthy(t *testing.T) {
 		t.Fatal("stream sent nothing")
 	}
 }
+
+// slowSession blocks every Control until two are in flight at once, so it
+// only completes when commands genuinely overlap.
+type slowSession struct {
+	fakeSession
+	mu       sync.Mutex
+	inFlight int
+	both     chan struct{}
+}
+
+func (s *slowSession) Control(ctx context.Context, _ []byte, _ bool) error {
+	s.mu.Lock()
+	s.inFlight++
+	if s.inFlight == 2 {
+		close(s.both)
+	}
+	s.mu.Unlock()
+	select {
+	case <-s.both:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestWithBulbRunsCommandsConcurrently(t *testing.T) {
+	s := &slowSession{both: make(chan struct{})}
+	c := newControl(Device{DeviceID: "dev1", Name: "Desk"})
+	c.dial = func(context.Context, string, []byte) (session.Session, error) { return s, nil }
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// Dial once up front so both commands share the session.
+	if _, _, _, err := c.acquire(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	errs := make(chan error, 2)
+	go func() { errs <- c.SetPower(ctx, true) }()
+	go func() { errs <- c.SetColour(ctx, dp.RGB{R: 255}) }()
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("commands did not overlap: %v", err)
+		}
+	}
+}

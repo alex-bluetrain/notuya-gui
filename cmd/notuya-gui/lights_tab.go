@@ -18,7 +18,7 @@ const lightsWheelSize = 240
 // lightsTab is the Lights tab: a checkbox list of devices above one set of
 // shared controls (colourControls + transition) whose changes are broadcast to
 // every checked light. It drives the app's per-device control instances
-// (mutex-serialized, shared with the scene editor): the wheel streams through
+// (shared with the scene editor): the wheel streams through
 // BeginLive/UpdateLive/EndLive, sliders/mode/power go through the
 // discrete setters.
 type lightsTab struct {
@@ -44,17 +44,18 @@ type lightsTab struct {
 // lightTarget is one device's row in the target list. The checkbox is the row's
 // only control: it selects whether the shared controls below drive this light.
 // The swatch and subtitle are read-only — they report this light's live state
-// (seeded from a Refresh on open, then kept current as broadcasts go out).
+// (published by the control's keeper on each (re)connect, then kept current
+// as broadcasts go out).
 type lightTarget struct {
 	ctl    *control
 	row    *adw.ActionRow
 	check  *gtk.CheckButton
 	swatch *gtk.DrawingArea
 
-	// state is the last known state for this light (seeded from a refresh,
-	// then kept current optimistically as broadcasts go out); col is the
-	// swatch colour derived from it. hasState is false until the first
-	// refresh lands so the swatch can read as "unknown".
+	// state is the last known state for this light (from the keeper's
+	// latest status, then kept current optimistically as broadcasts go out);
+	// col is the swatch colour derived from it. hasState is false until the
+	// first status lands so the swatch can read as "unknown".
 	state    SceneState
 	col      dp.RGB
 	hasState bool
@@ -194,8 +195,7 @@ func (a *desktopApp) buildLightsTab() *gtk.ScrolledWindow {
 			return
 		}
 		v := lt.cc.Bright.Value()
-		r, g, b := hsvToRGBInt(lt.cc.hue, lt.cc.sat, v/100.0)
-		rgb := dp.RGB{R: r, G: g, B: b}
+		rgb := hsvRGB(lt.cc.hue, lt.cc.sat, v/100.0)
 		mode := changeModeOf(lt.trans)
 		for _, t := range lt.checked() {
 			t.ctl.BeginLive(lt, rgb, mode)
@@ -365,8 +365,7 @@ func (lt *lightsTab) setBrightness(v float64) {
 	// (keyboard, click) a discrete write is correct and cheaper. In white mode
 	// brightness is its own DP.
 	if lt.mode == dp.ModeColour {
-		r, g, b := hsvToRGBInt(lt.cc.hue, lt.cc.sat, v/100.0)
-		rgb := dp.RGB{R: r, G: g, B: b}
+		rgb := hsvRGB(lt.cc.hue, lt.cc.sat, v/100.0)
 		if lt.brightDragging {
 			for _, t := range lt.checked() {
 				t.ctl.UpdateLive(lt, rgb)
@@ -411,7 +410,7 @@ func (lt *lightsTab) setSynced(synced map[string]bool) {
 		if t.ctl == nil {
 			continue
 		}
-		on := synced[t.ctl.dev.DeviceID]
+		on := synced[t.ctl.device().DeviceID]
 		if on == t.synced {
 			continue
 		}
@@ -425,7 +424,7 @@ func (lt *lightsTab) setSynced(synced map[string]bool) {
 // applyStatus paints one row from a fresh device status: the on/off switch, the
 // brightness readout, and the colour swatch. Runs on the GTK thread.
 func (t *lightTarget) applyStatus(st deviceStatus) {
-	t.state = stateFromStatus(t.ctl.dev.DeviceID, st)
+	t.state = stateFromStatus(t.ctl.device().DeviceID, st)
 	t.hasState = true
 	t.repaint()
 }

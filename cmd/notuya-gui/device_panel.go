@@ -11,15 +11,15 @@ import (
 type devicePanel struct {
 	ctl *control
 
-	// lastOn / hasState mirror the most recent refresh so the Rooms tab can
-	// summarise a room without issuing its own device query. onRefresh, when
-	// set, fires after a refresh so the Rooms tab can recompute; onToggle
-	// fires when a room master switch flips this device so the summary updates
-	// optimistically without waiting for a refresh.
-	lastOn    bool
-	hasState  bool
-	onRefresh func()
-	onToggle  func(on bool)
+	// lastOn / hasState mirror the keeper's latest status so the Rooms tab
+	// can summarise a room without issuing its own device query. onStatus,
+	// when set, fires after each status so the Rooms tab can recompute;
+	// onToggle fires when a room master switch flips this device so the
+	// summary updates optimistically without waiting for a status.
+	lastOn   bool
+	hasState bool
+	onStatus func()
+	onToggle func(on bool)
 }
 
 func newDevicePanel(ctl *control) *devicePanel {
@@ -27,15 +27,15 @@ func newDevicePanel(ctl *control) *devicePanel {
 }
 
 // subscribe caches the device's on/off state every time its control
-// (re)connects, then notifies onRefresh on the GTK thread so the Rooms
+// (re)connects, then notifies onStatus on the GTK thread so the Rooms
 // summary recomputes.
 func (p *devicePanel) subscribe() {
 	p.ctl.Subscribe(func(st deviceStatus) {
 		coreglib.IdleAdd(func() {
 			p.lastOn = st.On
 			p.hasState = true
-			if p.onRefresh != nil {
-				p.onRefresh()
+			if p.onStatus != nil {
+				p.onStatus()
 			}
 		})
 	})

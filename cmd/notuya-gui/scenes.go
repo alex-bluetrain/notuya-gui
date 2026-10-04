@@ -52,7 +52,8 @@ func sceneStateColour(st SceneState) (r, g, b uint8) {
 	scale := func(v uint8) uint8 { return uint8(float64(v) * dim) }
 	switch st.Mode {
 	case dp.ModeColour:
-		return hsvToRGBInt(st.Hue, st.Sat, dim)
+		c := hsvRGB(st.Hue, st.Sat, dim)
+		return c.R, c.G, c.B
 	case dp.ModeWhite:
 		// temp 0 = warm (2700K-ish), 100 = cool (6500K-ish); lerp between two
 		// representative sRGB whites so the gradient shows the tint difference.

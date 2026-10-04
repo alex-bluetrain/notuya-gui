@@ -245,8 +245,18 @@ func (cc *colourControls) SetHS(h, s float64) {
 // SelRGB is the current wheel selection at full value. Brightness is a
 // separate control and is deliberately not mixed in.
 func (cc *colourControls) SelRGB() dp.RGB {
-	r, g, b := hsvToRGBInt(cc.hue, cc.sat, 1.0)
-	return dp.RGB{R: r, G: g, B: b}
+	return hsvRGB(cc.hue, cc.sat, 1.0)
+}
+
+// hsvRGB converts the GUI's hue/sat/value (each 0-1) to RGB through the
+// bulb's own colour model, rounding to the whole degrees and per-mille steps
+// the bulb stores.
+func hsvRGB(h, s, v float64) dp.RGB {
+	return dp.HSV{
+		H: int(math.Round(h * 360)),
+		S: int(math.Round(s * 1000)),
+		V: int(math.Round(v * 1000)),
+	}.RGB()
 }
 
 // setSelection updates hue/sat from wheel coordinates (compensating for the
@@ -290,7 +300,8 @@ func (cc *colourControls) drawWheel(_ *gtk.DrawingArea, cr *cairo.Context, width
 	sx := cx + dist*math.Cos(angle)
 	sy := cy + dist*math.Sin(angle)
 
-	r, g, b := hsvToRGBInt(cc.hue, cc.sat, 1.0)
+	sel := hsvRGB(cc.hue, cc.sat, 1.0)
+	r, g, b := sel.R, sel.G, sel.B
 
 	// Drop shadow.
 	cr.Arc(sx, sy+1.5, thumbR+1, 0, 2*math.Pi)

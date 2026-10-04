@@ -20,16 +20,22 @@ uses CGO; the `notuya-go` packages it imports stay CGO-free.
 
 ## Layout
 
-Everything is under `cmd/notuya-gui/`:
+Everything is under `cmd/notuya-gui/` (plus `internal/screensync/`):
 
 - `main.go` — entry: no/empty config → wizard, else app
-- `app.go` — window, tabs, room helpers
+- `app.go` — window, tabs, room helpers, one `control` per device
 - `lights_tab.go` / `colour_controls.go` — Lights tab + shared colour widget
-- `control.go` / `stream.go` — per-device session; live colour streamer (DP 28) for drags
+- `device_panel.go` — per-device cached state for the Rooms summary
+- `control.go` — per-device session, commands, live-stream ownership
+- `keeper.go` — per-device link keeper: holds the session, probes, redials
+- `stream.go` — live colour streamer (DP 28) for drags and Screen Sync
 - `scenes.go` / `scene_editor.go` — scenes
+- `screen_sync_tab.go` / `sync_overlay.go` — Screen Sync tab + region overlay
 - `wizard.go` — first-run window AND the embedded Settings tab
-- `config.go` — Config/Device/Room/Scene types, `groupByRoom`, `saveConfig`
-- `color.go` / `wheel.go` — colour math + wheel bitmap
+- `config.go` — Config/Device/Room/Scene/ScreenSync types, `groupByRoom`, `saveConfig`
+- `wheel.go` — colour wheel bitmap (colour maths comes from notuya-go `dp`)
+- `internal/screensync/` — capture (portal + GStreamer), Hyprland window
+  tracker, region averaging engine
 
 ## Key facts
 
@@ -37,9 +43,19 @@ Everything is under `cmd/notuya-gui/`:
   are top-level, not a per-device field. `saveConfig` is atomic and preserves
   unknown keys (other tools may share the file).
 - Sessions come from `session/v35.Open`; bulbs are driven via `bulb.Bulb` and
-  `dp` types. `control` still serializes commands per device behind a mutex
-  (one ordered command stream per bulb); live colour drags borrow the streamer
-  (DP 28 real-time stream).
+  `dp` types. Each bulb's session is **held open** by its keeper. The
+  session's own idle heartbeat keeps the link alive and a socket error
+  closes `Done()`; the keeper also sends a waited heartbeat every 10s and
+  redials with 1s–10s backoff when the link is dead.
+- Tabs **listen, never poll**: Lights rows and Rooms panels `Subscribe` to
+  the status the keeper publishes on every (re)connect.
+- Commands may run concurrently over the session; `c.mu` guards only the
+  control's fields and the dial. Live colour drags and Screen Sync borrow
+  the bulb via the streamer (DP 28), which closes the command session; the
+  keeper idles meanwhile and redials when the stream ends.
+- The GUI holds each bulb's **only** local connection. Another local client
+  (tinytuya, the Tuya app on LAN) knocks the GUI off and vice versa — they
+  fight in a reconnect loop. Close the GUI before using other tools.
 - Local keys come from Tuya's cloud, entered by hand — discovery only yields
   `device_id` + `ip`.
 - Develop against a local `notuya-go` via a gitignored `go.work`, never a

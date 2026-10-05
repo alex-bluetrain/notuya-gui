@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/alex-bluetrain/notuya-gui/compare/v1.5.0...v1.6.0) (2026-10-05)
+
+
+### Features
+
+* **screensync:** match the screen's light, with a live mapping choice ([45e5ca3](https://github.com/alex-bluetrain/notuya-gui/commit/45e5ca38d2d1cf0746ff97650bc0d821def714f1))
+
 ## [1.5.0](https://github.com/alex-bluetrain/notuya-gui/compare/v1.4.1...v1.5.0) (2026-10-05)
 
 

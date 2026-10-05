@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.1](https://github.com/alex-bluetrain/notuya-gui/compare/v1.4.0...v1.4.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* **gui:** build against the layered notuya-go release ([d12ccfa](https://github.com/alex-bluetrain/notuya-gui/commit/d12ccfae359c6f29b12a63b82fac8a82b1cc049f))
+* **gui:** require notuya-go v1.1.0 ([86e9e7a](https://github.com/alex-bluetrain/notuya-gui/commit/86e9e7a2cd94ed0bce61ba7758674794f99daffc))
+
 ## [1.4.0](https://github.com/alex-bluetrain/notuya-gui/compare/v1.3.0...v1.4.0) (2026-10-05)
 
 

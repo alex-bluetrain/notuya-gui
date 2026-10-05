@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/bulb"
 	"github.com/alex-bluetrain/notuya-go/pkg/dp"
@@ -362,7 +363,7 @@ func (c *control) BeginLive(owner any, seed dp.RGB, mode dp.ChangeMode) error {
 	c.closeLocked()
 	c.liveOwner = owner
 	c.liveMode = mode
-	c.live = newStreamer([]Device{c.dev}, seed, bulb.StreamOptions{ChangeMode: mode.Ptr()}, c.dial)
+	c.live = newStreamer([]Device{c.dev}, seed, bulb.StreamOptions{ChangeMode: mode.Ptr(), Interval: time.Millisecond}, c.dial)
 	return nil
 }
 

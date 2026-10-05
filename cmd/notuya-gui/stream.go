@@ -5,11 +5,28 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/bulb"
 	"github.com/alex-bluetrain/notuya-go/pkg/dp"
+	"github.com/alex-bluetrain/notuya-go/pkg/session"
 )
+
+// liveSends counts messages written to bulbs by live streams, for the
+// rate shown in the preset editor.
+var liveSends atomic.Int64
+
+// captureFrames counts Screen Sync frames, for the same readout.
+var captureFrames atomic.Int64
+
+// countingSession counts every Control write on a live stream.
+type countingSession struct{ session.Session }
+
+func (s countingSession) Control(ctx context.Context, body []byte, wait bool) error {
+	liveSends.Add(1)
+	return s.Session.Control(ctx, body, wait)
+}
 
 // commandTimeout bounds one device's open handshake and the final
 // final colour write.
@@ -118,7 +135,7 @@ func streamDevice(ctx context.Context, dial dialFunc, d Device, t *target, opts 
 	}
 	defer sess.Close()
 
-	b := bulb.New(sess, t.name)
+	b := bulb.New(countingSession{sess}, t.name)
 
 	// Tap the colour stream to remember the last colour so the bulb can be
 	// left holding it.

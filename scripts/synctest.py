@@ -121,42 +121,80 @@ try:
     check(node(app, "Seeded") is not None, "seeded preset listed")
     check(node(app, "Screen Sync requires Hyprland") is None or True, "banner probe")
 
-    # Add a preset through the dialog.
+    def showing(name, role=None):
+        return [n for n in all_named(app, name, role) if "showing" in U.flags(n)]
+
+    def editor_gone():
+        for _ in range(25):
+            time.sleep(0.2)
+            if not showing("New preset") and not showing("Edit preset"):
+                return True
+        return False
+
+    # New preset: same window as edit, default name, no target, nothing runs.
     act(app, "Add preset…")
-    toggle(check_box(app, "TEST-2")[-1])
-    check("checked" in U.flags(check_box(app, "TEST-2")[-1]), "TEST-2 ticked")
-    act(app, "Add", "push button")
-    time.sleep(1)
+    check(len(showing("New preset")) >= 1, "Add preset opens the New preset window")
+    check(len(cfgnow()["screenSync"]["presets"]) == 1, "nothing written before Save")
+    names = [n for n in U.walk(app) if n.get_role_name() == "text" and "showing" in U.flags(n)]
+    check(any(Atspi.Text.get_text(n, 0, -1) == "Preset 2" for n in names if (n.get_name() or "") == "Preset name"), "default name Preset 2")
+    check(len(showing("None")) >= 1, "target shows None")
+    edit = showing("Edit regions", "button")
+    check(len(edit) >= 1 and edit[0].get_description() == "Select a target first",
+          f"Edit regions waits for a target: {edit[0].get_description() if edit else None}")
+    time.sleep(1.5)
+    check(all(not on(n) for n in U.walk(app) if n.get_role_name() == "toggle button" and (n.get_name() or "") == "Seeded"), "opening the window starts nothing")
+
+    # Cancel discards the draft.
+    act(app, "Cancel", "button")
+    check(editor_gone(), "Cancel closes the window")
+    check(len(cfgnow()["screenSync"]["presets"]) == 1, "Cancel discards the new preset")
+
+    # New again, Select a target (test backend picks TEST-1), Save.
+    act(app, "Add preset…")
+    act(app, "Select", "button")
+    time.sleep(3)
+    check(len(showing("Monitors · TEST-1")) >= 1, "Select fills the target")
+    check(len(showing("Change", "button")) >= 1, "button now reads Change")
+    # Cage has no layer-shell, so Edit regions stays off there, but no longer for want of a target.
+    edit = showing("Edit regions", "button")
+    check(len(edit) >= 1 and edit[0].get_description() != "Select a target first",
+          f"Edit regions no longer waits for a target: {edit[0].get_description() if edit else None}")
+    act(app, "Save", "button"); time.sleep(1.2)
+    check(editor_gone(), "Save closes the window")
     c = cfgnow()["screenSync"]["presets"]
-    check(len(c) == 2 and c[1]["target"]["monitors"] == ["TEST-2"], f"preset added & saved: {[p['target'] for p in c]}")
+    check(len(c) == 2 and c[1]["name"] == "Preset 2", "new preset saved")
+    check(c[1]["target"] == {"kind": "monitors", "monitors": ["TEST-1"]}, f"target saved: {c[1]['target']}")
     check(cfgnow().get("theme") == "keep-me", "unknown key kept")
-    # Delete it via its page (we were navigated into it).
-    act(app, "Delete preset", "push button")
-    act(app, "Delete", "push button")
+    tile2 = [n for n in all_named(app, "Preset 2") if n.get_role_name() == "toggle button" and "showing" in U.flags(n)]
+    check(len(tile2) >= 1 and not on(tile2[0]), "preview stopped after Save")
+    act(app, "Delete preset Preset 2")
+    act(app, "Delete", "button")
     time.sleep(1)
     check(len(cfgnow()["screenSync"]["presets"]) == 1, "preset deleted")
 
-    # Open seeded preset, bind lights.
+    # Edit seeded preset: bind lights through chips (written only on Save).
+    def chip(region):
+        # Chips are named by their label; the Left card comes first.
+        uniq = showing("Lamp A", "toggle button")
+        i = {"Left": 0, "Ambi": 0, "Right": 1}[region]
+        return uniq[i:i + 1]
     act(app, "Edit preset Seeded")
-    act(app, "Left")           # expand
-    lamps = all_named(app, "Lamp A")
-    check(len(lamps) >= 1, "light rows in region")
-    toggle(lamp_rows(app)[0])
-    time.sleep(1.2)
+    check(len(showing("Edit preset")) >= 1, "Edit preset window opened")
+    check(len(chip("Left")) >= 1 and len(chip("Right")) >= 1, "light chips on every region card")
+    Atspi.Action.do_action(chip("Left")[0], 0); time.sleep(0.8)
     r = cfgnow()["screenSync"]["presets"][0]["regions"]
-    check(r[0]["devices"] == ["fake1"], f"Lamp A bound to Left: {r[0]['devices']}")
-    act(app, "Right")
-    time.sleep(0.5)
-    # Second "Lamp A" row is under Right; ticking moves it there.
-    rows = lamp_rows(app)
-    if rows:
-        toggle(rows[-1]); time.sleep(1.2)
+    check(r[0]["devices"] == [], f"unsaved binding not written: {r[0]['devices']}")
+    act(app, "Save", "button"); time.sleep(1.2)
+    r = cfgnow()["screenSync"]["presets"][0]["regions"]
+    check(r[0]["devices"] == ["fake1"], f"Lamp A bound to Left after Save: {r[0]['devices']}")
+    act(app, "Edit preset Seeded")
+    Atspi.Action.do_action(chip("Right")[0], 0); time.sleep(0.8)
+    check(not on(chip("Left")[0]), "turning on in Right turns it off in Left")
+    act(app, "Save", "button"); time.sleep(1.2)
     r = cfgnow()["screenSync"]["presets"][0]["regions"]
     check(r[0]["devices"] == [] and r[1]["devices"] == ["fake1"], f"binding exclusive (moved): {[x['devices'] for x in r]}")
 
     # Start sync from the list.
-    nav_back = node(app, "Back")
-    if nav_back: Atspi.Action.do_action(nav_back, 0); time.sleep(0.8)
     sws = preset_tiles(app)
     check(len(sws) >= 1, "preset tile present")
     Atspi.Action.do_action(sws[0], 0)
@@ -164,13 +202,11 @@ try:
     check(on(sws[0]), f"sync running: {U.flags(sws[0])}")
     live = [U.flags(n) for n in all_named(app, "Live")]
     check(any("showing" in f for f in live), f"running tile shows Live: {live}")
-
     act(app, "Lights")
     time.sleep(1)
     sub = [n for n in U.walk(app) if (n.get_description() or "") == "Controlled by Screen Sync"
            or (n.get_name() or "") == "Controlled by Screen Sync"]
     check(len(sub) >= 1, "Lamp A shows 'Controlled by Screen Sync' in Lights")
-
     act(app, "Screen Sync")
     sws = preset_tiles(app)
     Atspi.Action.do_action(sws[0], 0)
@@ -180,33 +216,34 @@ try:
     sub = [n for n in U.walk(app) if (n.get_description() or "") == "Controlled by Screen Sync"]
     check(len(sub) == 0, "lockout cleared after stop")
 
-    # Rename + delete region.
+    # Rename + delete a region, then Esc discards an unsaved edit.
     act(app, "Screen Sync")
     act(app, "Edit preset Seeded")
-    act(app, "Left")
-    names = [n for n in U.walk(app) if n.get_role_name() == "text" and (n.get_name() or "") == "Name"]
     ok = False
-    for n in names:
-        try:
-            et = n.get_editable_text_iface() if hasattr(n, "get_editable_text_iface") else n
-            txt = Atspi.Text.get_text(n, 0, -1)
-            if txt == "Left":
-                Atspi.EditableText.delete_text(n, 0, len(txt))
-                Atspi.EditableText.insert_text(n, 0, "Ambi", 4)
-                ok = True
-        except Exception as e:
-            print("rename err", e)
-    time.sleep(1.5)
+    for n in showing("Region name"):
+        txt = Atspi.Text.get_text(n, 0, -1)
+        if txt == "Left":
+            Atspi.EditableText.delete_text(n, 0, len(txt))
+            Atspi.EditableText.insert_text(n, 0, "Ambi", 4)
+            ok = True
+    time.sleep(0.5)
+    act(app, "Save", "button"); time.sleep(1.2)
     r = cfgnow()["screenSync"]["presets"][0]["regions"]
     check(ok and r[0]["name"] == "Ambi", f"region renamed: {[x['name'] for x in r]}")
-    trash = [n for n in U.walk(app) if (n.get_name() or "").startswith("Delete region")
-             and U.first_action(n) in U.CLICK_ACTIONS]
-    # GTK's a11y tree reaches some subtrees via several parents: dedupe by name.
-    trash = list({n.get_name(): n for n in trash}.values())
-    check(len(trash) == 2, f"two delete buttons: {len(trash)}")
-    if trash:
-        Atspi.Action.do_action(trash[0], 0); time.sleep(0.6)
-        act(app, "Delete", "push button"); time.sleep(1.2)
+    act(app, "Edit preset Seeded")
+    trash = [n for n in showing("Delete region Ambi") if U.first_action(n) in U.CLICK_ACTIONS]
+    check(len(trash) >= 1, "delete button on region card")
+    Atspi.Action.do_action(trash[0], 0); time.sleep(0.6)
+    act(app, "Cancel", "button")
+    check(editor_gone(), "Cancel closes the editor")
+    check(len(cfgnow()["screenSync"]["presets"][0]["regions"]) == 2, "Cancel discards the delete")
+    act(app, "Edit preset Seeded")
+    key("Escape")
+    check(editor_gone(), "Escape closes the editor")
+    act(app, "Edit preset Seeded")
+    trash = [n for n in showing("Delete region Ambi") if U.first_action(n) in U.CLICK_ACTIONS]
+    Atspi.Action.do_action(trash[0], 0); time.sleep(0.6)
+    act(app, "Save", "button"); time.sleep(1.2)
     r = cfgnow()["screenSync"]["presets"][0]["regions"]
     check(len(r) == 1 and r[0]["name"] == "Right", f"region deleted: {[x['name'] for x in r]}")
 finally:

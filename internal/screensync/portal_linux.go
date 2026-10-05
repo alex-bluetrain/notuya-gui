@@ -68,7 +68,7 @@ func openPortalCapture(ctx context.Context, t Target, opts CaptureOptions) (_ Ca
 		keys = t.Monitors
 	}
 	for i, key := range keys {
-		frag, err := c.open(ctx, t.Kind, key, opts)
+		frag, _, err := c.open(ctx, t.Kind, key, opts)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", key, err)
 		}
@@ -88,24 +88,37 @@ func (c *portalCapture) Close() {
 	c.conn.Close()
 }
 
+// shared is what the portal reports it started sharing.
+type shared struct {
+	window    bool   // a window, else a monitor
+	mappingID string // the monitor connector, for a monitor
+	w, h      int    // stream size in buffer pixels
+	token     string // restore token, "" if the user did not allow one
+}
+
 // open runs one CreateSession → SelectSources → Start → OpenPipeWireRemote
-// round and returns the GStreamer fragment for the resulting stream.
-func (c *portalCapture) open(ctx context.Context, kind, key string, opts CaptureOptions) (string, error) {
+// round and returns the GStreamer fragment for the resulting stream. An
+// empty kind lets the picker offer both monitors and windows.
+func (c *portalCapture) open(ctx context.Context, kind, key string, opts CaptureOptions) (string, shared, error) {
+	var sh shared
 	res, err := c.request(ctx, "CreateSession", nil, map[string]dbus.Variant{
 		"session_handle_token": dbus.MakeVariant(uniqueToken()),
 	})
 	if err != nil {
-		return "", err
+		return "", sh, err
 	}
 	var sess dbus.ObjectPath
 	if s, ok := res["session_handle"].Value().(string); ok {
 		sess = dbus.ObjectPath(s)
 	} else {
-		return "", errors.New("portal: no session handle")
+		return "", sh, errors.New("portal: no session handle")
 	}
 
-	types := uint32(1) // monitor
-	if kind == TargetWindow {
+	types := uint32(1 | 2) // monitor | window
+	switch kind {
+	case TargetMonitors:
+		types = 1
+	case TargetWindow:
 		types = 2
 	}
 	sel := map[string]dbus.Variant{
@@ -121,45 +134,57 @@ func (c *portalCapture) open(ctx context.Context, kind, key string, opts Capture
 		opts.OnPick(key)
 	}
 	if _, err := c.request(ctx, "SelectSources", []any{sess}, sel); err != nil {
-		return "", err
+		return "", sh, err
 	}
 	res, err = c.request(ctx, "Start", []any{sess, ""}, map[string]dbus.Variant{})
 	if err != nil {
-		return "", err
+		return "", sh, err
 	}
 	if s, ok := res["restore_token"].Value().(string); ok && s != "" {
 		c.tokens[key] = s
+		sh.token = s
 	}
 	var streams []struct {
 		Node  uint32
 		Props map[string]dbus.Variant
 	}
 	if v, ok := res["streams"]; !ok || dbus.Store([]any{v.Value()}, &streams) != nil || len(streams) == 0 {
-		return "", errors.New("portal: no stream")
+		return "", sh, errors.New("portal: no stream")
 	}
 	node := streams[0].Node
+	props := streams[0].Props
+	if v, ok := props["source_type"].Value().(uint32); ok {
+		sh.window = v == 2
+	}
+	if v, ok := props["mapping_id"].Value().(string); ok {
+		sh.mappingID = v
+	}
+	var size []int32
+	if v, ok := props["size"]; ok && dbus.Store([]any{v.Value()}, &size) == nil && len(size) == 2 {
+		sh.w, sh.h = int(size[0]), int(size[1])
+	}
 
 	var fd dbus.UnixFD
 	if err := c.conn.Object(portalDest, portalPath).CallWithContext(ctx, screenCast+".OpenPipeWireRemote", 0,
 		sess, map[string]dbus.Variant{}).Store(&fd); err != nil {
-		return "", err
+		return "", sh, err
 	}
 	c.fds = append(c.fds, int(fd))
 
 	formats, err := nodeFormats(ctx, node)
 	if err != nil {
-		return "", err
+		return "", sh, err
 	}
 	for _, f := range formats {
 		if probeFormat(int(fd), node, f) {
 			pfd, err := syscall.Dup(int(fd))
 			if err != nil {
-				return "", err
+				return "", sh, err
 			}
-			return pipewireFragment(pfd, node, f), nil
+			return pipewireFragment(pfd, node, f), sh, nil
 		}
 	}
-	return "", ErrNoDMABuf
+	return "", sh, ErrNoDMABuf
 }
 
 // pipewireFragment hands pipewiresrc its own fd (it takes ownership) and
@@ -347,4 +372,113 @@ func choiceValues[T any](raw json.RawMessage) []T {
 		}
 	}
 	return out
+}
+
+// pickPortal shows the system picker once (monitors and windows), opens
+// the chosen source and works out which Target it is.
+func pickPortal(ctx context.Context) (_ Target, _ Capture, err error) {
+	conn, err := dbus.ConnectSessionBus()
+	if err != nil {
+		return Target{}, nil, err
+	}
+	c := &portalCapture{conn: conn, tokens: map[string]string{}}
+	defer func() {
+		if err != nil {
+			c.Close()
+		}
+	}()
+	const pickKey = "pick"
+	frag, sh, err := c.open(ctx, "", pickKey, CaptureOptions{})
+	if err != nil {
+		return Target{}, nil, err
+	}
+	tr, err := NewTracker()
+	if err != nil {
+		return Target{}, nil, err
+	}
+	t, err := identify(sh, permissionEntry(conn, sh.token), tr)
+	if err != nil {
+		return Target{}, nil, err
+	}
+	key := WindowTokenKey
+	if t.Kind == TargetMonitors {
+		key = t.Monitors[0]
+	}
+	delete(c.tokens, pickKey)
+	if sh.token != "" {
+		c.tokens[key] = sh.token
+	}
+	c.srcs = []Source{{Fragment: frag, Canvas: Rect{0, 0, 1, 1}}}
+	return t, c, nil
+}
+
+// permissionEntry reads the restore data the portal saved under token: its
+// "output" or "windowClass". Empty when there is no token or entry.
+func permissionEntry(conn *dbus.Conn, token string) map[string]string {
+	out := map[string]string{}
+	if token == "" {
+		return out
+	}
+	var perms map[string][]string
+	var data dbus.Variant
+	if conn.Object("org.freedesktop.impl.portal.PermissionStore", "/org/freedesktop/impl/portal/PermissionStore").
+		Call("org.freedesktop.impl.portal.PermissionStore.Lookup", 0, "screencast", token).
+		Store(&perms, &data) != nil {
+		return out
+	}
+	var restore struct {
+		Issuer  string
+		Version uint32
+		Data    dbus.Variant
+	}
+	if dbus.Store([]any{data.Value()}, &restore) != nil {
+		return out
+	}
+	m, _ := restore.Data.Value().(map[string]dbus.Variant)
+	for _, k := range []string{"output", "windowClass"} {
+		if s, ok := m[k].Value().(string); ok {
+			out[k] = s
+		}
+	}
+	return out
+}
+
+// identify turns what the portal shared into a Target: the monitor it
+// names, or the window it names, else the window whose shape matches the
+// stream best (most recently focused on a tie).
+func identify(sh shared, saved map[string]string, tr Tracker) (Target, error) {
+	if !sh.window {
+		name := cmp.Or(sh.mappingID, saved["output"])
+		if name == "" {
+			return Target{}, errors.New("screensync: the picker did not say which monitor was shared")
+		}
+		return Target{Kind: TargetMonitors, Monitors: []string{name}}, nil
+	}
+	if c := saved["windowClass"]; c != "" {
+		return Target{Kind: TargetWindow, WindowClass: c}, nil
+	}
+	ws, err := tr.Windows()
+	if err != nil {
+		return Target{}, err
+	}
+	if len(ws) == 0 || sh.w <= 0 || sh.h <= 0 {
+		return Target{}, errors.New("screensync: could not tell which window was shared")
+	}
+	ratio := float64(sh.w) / float64(sh.h)
+	best := slices.MinFunc(ws, func(a, b Window) int {
+		return cmp.Or(cmp.Compare(aspectGap(a, ratio), aspectGap(b, ratio)), cmp.Compare(a.recent, b.recent))
+	})
+	t := Target{Kind: TargetWindow, WindowClass: best.Class}
+	if slices.ContainsFunc(ws, func(w Window) bool { return w.Class == best.Class && w.Title != best.Title }) {
+		t.TitleMatch = best.Title
+	}
+	return t, nil
+}
+
+func aspectGap(w Window, ratio float64) float64 {
+	if w.H == 0 {
+		return 1e9
+	}
+	d := float64(w.W)/float64(w.H) - ratio
+	return max(d, -d)
 }

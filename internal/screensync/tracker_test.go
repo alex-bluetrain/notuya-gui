@@ -1,8 +1,11 @@
 package screensync
 
 import (
+	"context"
+	"reflect"
 	"slices"
 	"testing"
+	"time"
 )
 
 var testMons = []Monitor{
@@ -88,5 +91,40 @@ func TestParseNodeFormats(t *testing.T) {
 	want := []string{"AR24:0x03000000004fe010", "AR24:0x0000000000000000", "XR24:0x0000000000000000"}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %v want %v", got, want)
+	}
+}
+
+type fixedTracker struct{ ws []Window }
+
+func (fixedTracker) Monitors() ([]Monitor, error)                                  { return nil, nil }
+func (f fixedTracker) Windows() ([]Window, error)                                  { return f.ws, nil }
+func (fixedTracker) Watch(context.Context, Target, time.Duration, func(Placement)) {}
+
+func TestIdentify(t *testing.T) {
+	tr := fixedTracker{ws: []Window{
+		{Class: "kitty", Title: "a", W: 800, H: 800, recent: 0},
+		{Class: "game", Title: "Game", W: 1920, H: 1080, recent: 2},
+		{Class: "game2", Title: "Other", W: 1280, H: 720, recent: 1},
+	}}
+	cases := []struct {
+		name  string
+		sh    shared
+		saved map[string]string
+		want  Target
+	}{
+		{"monitor by mapping id", shared{mappingID: "DP-3"}, nil, Target{Kind: TargetMonitors, Monitors: []string{"DP-3"}}},
+		{"monitor from saved output", shared{}, map[string]string{"output": "HDMI-A-1"}, Target{Kind: TargetMonitors, Monitors: []string{"HDMI-A-1"}}},
+		{"window from saved class", shared{window: true}, map[string]string{"windowClass": "game"}, Target{Kind: TargetWindow, WindowClass: "game"}},
+		{"window by shape, recent wins tie", shared{window: true, w: 1600, h: 900}, nil, Target{Kind: TargetWindow, WindowClass: "game2"}},
+		{"window by shape", shared{window: true, w: 500, h: 500}, nil, Target{Kind: TargetWindow, WindowClass: "kitty"}},
+	}
+	for _, c := range cases {
+		got, err := identify(c.sh, c.saved, tr)
+		if err != nil || !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: got %+v, %v; want %+v", c.name, got, err, c.want)
+		}
+	}
+	if _, err := identify(shared{}, nil, tr); err == nil {
+		t.Error("unnamed monitor: want error")
 	}
 }

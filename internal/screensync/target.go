@@ -120,3 +120,15 @@ func openTestCapture(t Target) (Capture, error) {
 func (c *testCapture) Sources() []Source         { return c.srcs }
 func (c *testCapture) Tokens() map[string]string { return nil }
 func (c *testCapture) Close()                    {}
+
+// PickTarget shows the system share picker once and returns what the user
+// picked, already open, so the first start needs no second picker. Its
+// Tokens let later starts skip the picker.
+func PickTarget(ctx context.Context) (Target, Capture, error) {
+	if testBackend() {
+		t := Target{Kind: TargetMonitors, Monitors: []string{stubMonitors[0].Name}}
+		c, err := openTestCapture(t)
+		return t, c, err
+	}
+	return pickPortal(ctx)
+}

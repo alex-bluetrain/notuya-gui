@@ -33,6 +33,7 @@ type syncOverlay struct {
 	canvas   screensync.Monitor
 	regions  []overlayRegion
 	selected int
+	css      *gtk.CSSProvider
 
 	// onChange fires while a region is dragged; onCreate when a new one
 	// is drawn; onDelete for Delete on the selected one; onDone on Esc or
@@ -66,6 +67,10 @@ type overlayWindow struct {
 // wlr-layer-shell and the library is linked ahead of libwayland-client.
 func layerShellSupported() bool { return gtk4layershell.IsSupported() }
 
+// overlayCSS drops the window background so only what draw paints covers
+// the screen.
+const overlayCSS = `window.sync-overlay { background: transparent; }`
+
 func newSyncOverlay() *syncOverlay {
 	return &syncOverlay{selected: -1}
 }
@@ -74,7 +79,13 @@ func newSyncOverlay() *syncOverlay {
 func (o *syncOverlay) Show(app *gtk.Application, p screensync.Placement) {
 	o.Hide()
 	o.canvas = p.Canvas
-	mons := gdk.DisplayGetDefault().Monitors()
+	disp := gdk.DisplayGetDefault()
+	if o.css == nil {
+		o.css = gtk.NewCSSProvider()
+		o.css.LoadFromString(overlayCSS)
+		gtk.StyleContextAddProviderForDisplay(disp, o.css, uint(gtk.STYLE_PROVIDER_PRIORITY_APPLICATION))
+	}
+	mons := disp.Monitors()
 	for _, m := range p.Monitors {
 		var gm *gdk.Monitor
 		for i := uint(0); i < mons.NItems(); i++ {

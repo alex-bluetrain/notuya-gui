@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.4.0](https://github.com/alex-bluetrain/notuya-gui/compare/v1.3.0...v1.4.0) (2026-10-05)
+
+
+### Features
+
+* **gui:** add a Screen Sync tab and move to the layered notuya-go API ([9b8aa61](https://github.com/alex-bluetrain/notuya-gui/commit/9b8aa611ab9a02995c10f2c67b9e92a649dfbd75))
+* **gui:** reconnect bulbs on their own and repaint after a power cycle ([3b8978b](https://github.com/alex-bluetrain/notuya-gui/commit/3b8978be5317ace4ad81c8b1de56cca617468fb0))
+
+
+### Bug Fixes
+
+* **gui:** drive each bulb through one shared session from every tab ([ccae6b5](https://github.com/alex-bluetrain/notuya-gui/commit/ccae6b5abbcfbd6fb6dc0c3303c7d4bd066ea9b4))
+* **gui:** fix a control data race and let commands overlap ([7f6533d](https://github.com/alex-bluetrain/notuya-gui/commit/7f6533d7e18d1c0bbdbcd398c8d5963d03c8fb2b))
+* **gui:** reconnect only when the link is dead ([2e4dfd9](https://github.com/alex-bluetrain/notuya-gui/commit/2e4dfd948d7fc0c6641266849859509699c5175b))
+* **gui:** republish the real state when a command fails ([45da8c0](https://github.com/alex-bluetrain/notuya-gui/commit/45da8c0f6a57e2733d210ebc878299f56f7215a3))
+
 ## [1.3.0](https://github.com/alex-bluetrain/notuya-gui/compare/v1.2.0...v1.3.0) (2026-09-30)
 
 

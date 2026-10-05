@@ -122,11 +122,33 @@ func (a *desktopApp) buildScreenSyncTab() gtk.Widgetter {
 		t.saveSoon()
 	})
 	bright.Add(scale)
+
+	mapping := adw.NewComboRow()
+	mapping.SetTitle("Colour mapping")
+	mapping.SetSubtitle("Match light: dark scenes stay dark · Match values: brighter, paler")
+	mapping.SetModel(gtk.NewStringList([]string{"Match light", "Match values"}))
+	if a.cfg.ScreenSync.Mapping == "values" {
+		mapping.SetSelected(1)
+	}
+	mapping.NotifyProperty("selected", func() {
+		a.cfg.ScreenSync.Mapping = ""
+		if mapping.Selected() == 1 {
+			a.cfg.ScreenSync.Mapping = "values"
+		}
+		if t.engine != nil {
+			t.engine.SetMapping(t.mapping())
+		}
+		t.saveSoon()
+	})
+	mapGroup := adw.NewPreferencesGroup()
+	mapGroup.Add(mapping)
+	mapGroup.SetMarginTop(12)
 	bright.SetMarginTop(12)
 
 	box.Append(title)
 	box.Append(t.flow)
 	box.Append(bright)
+	box.Append(mapGroup)
 
 	clamp := adw.NewClamp()
 	clamp.SetMaximumSize(640)
@@ -371,15 +393,31 @@ func (t *syncTab) paintLive(i int, cs []dp.HSV) {
 		return
 	}
 	t.lastPaint = time.Now()
-	t.css.LoadFromString(t.tileCSS + tileGradientCSS(fmt.Sprintf("sync-tile-%d", i), toRGB(cs)))
+	t.css.LoadFromString(t.tileCSS + tileGradientCSS(fmt.Sprintf("sync-tile-%d", i), t.toRGB(cs)))
 }
 
-func toRGB(cs []dp.HSV) []colour.RGB {
+func (t *syncTab) toRGB(cs []dp.HSV) []colour.RGB {
 	out := make([]colour.RGB, len(cs))
 	for i, c := range cs {
-		out[i] = colour.ToRGB(c)
+		out[i] = t.display(c)
 	}
 	return out
+}
+
+// mapping is the configured screen→bulb colour mapping.
+func (t *syncTab) mapping() screensync.Mapping {
+	if t.a.cfg.ScreenSync.Mapping == "values" {
+		return screensync.MapValues
+	}
+	return screensync.MapLight
+}
+
+// display is the screen colour a bulb colour came from, for swatches.
+func (t *syncTab) display(c dp.HSV) colour.RGB {
+	if t.mapping() == screensync.MapValues {
+		return colour.ToRGB(c)
+	}
+	return colour.Display(c)
 }
 
 // syncSwitches reflects t.active on the tiles; a stopped tile gets its idle
@@ -533,6 +571,7 @@ func (t *syncTab) run(i int, repick bool) {
 	tokens := p.RestoreTokens
 	regions := t.engineRegions(i)
 	brightness := t.a.cfg.ScreenSync.Brightness
+	mapping := t.mapping()
 	pick := repick
 	go func() {
 		var capture screensync.Capture
@@ -548,6 +587,7 @@ func (t *syncTab) run(i int, repick bool) {
 				Sources:    capture.Sources(),
 				Regions:    regions,
 				Brightness: brightness,
+				Mapping:    mapping,
 				OnFrame: func(cs []dp.HSV) {
 					captureFrames.Add(1)
 					coreglib.IdleAdd(func() { t.showColours(i, cs) })
@@ -713,7 +753,7 @@ func (t *syncTab) showColours(i int, cs []dp.HSV) {
 	}
 	if t.editTarget == i {
 		for ri, c := range cs {
-			t.overlay.SetColour(ri, c)
+			t.overlay.SetColour(ri, t.display(c))
 		}
 	}
 }

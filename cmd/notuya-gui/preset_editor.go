@@ -11,8 +11,6 @@ import (
 	coreglib "github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 	"github.com/diamondburned/gotk4/pkg/pango"
-
-	"github.com/alex-bluetrain/notuya-gui/internal/colour"
 )
 
 // newPreset is the editor index of a preset that isn't in the list yet.
@@ -32,6 +30,7 @@ type presetEditor struct {
 	editB    *gtk.Button
 	grid     *gtk.FlowBox
 	rate     *gtk.Label
+	slots    *gtk.Label // debug: each synced bulb's live slot
 	rateTick coreglib.SourceHandle
 
 	swatches   []*regionSwatch
@@ -153,6 +152,14 @@ func (t *syncTab) openPreset(i int) {
 	e.rate.AddCSSClass("caption")
 	e.rate.SetXAlign(0)
 	body.Append(e.rate)
+	e.slots = gtk.NewLabel("")
+	e.slots.AddCSSClass("dim-label")
+	e.slots.AddCSSClass("caption")
+	e.slots.AddCSSClass("monospace")
+	e.slots.SetXAlign(0)
+	e.slots.SetSelectable(true)
+	e.slots.SetFocusable(false)
+	body.Append(e.slots)
 	e.startRate()
 
 	clamp := adw.NewClamp()
@@ -290,7 +297,7 @@ func (e *presetEditor) regionCard(ri int) gtk.Widgetter {
 	sw.da.SetDrawFunc(func(_ *gtk.DrawingArea, cr *cairo.Context, w, h int) {
 		roundedRect(cr, 0, 0, float64(w), float64(h), 7)
 		if sw.set {
-			rgb := colour.ToRGB(sw.c)
+			rgb := t.display(sw.c)
 			cr.SetSourceRGB(float64(rgb.R)/255, float64(rgb.G)/255, float64(rgb.B)/255)
 		} else {
 			cr.SetSourceRGBA(0.5, 0.5, 0.5, 0.25)
@@ -387,6 +394,33 @@ func (e *presetEditor) preview() {
 	}
 }
 
+// slotText lists the live slot of every bulb in the draft's regions: what the
+// writer will send (or last sent) on DP 28, as the bulb's HSV and in %.
+func (e *presetEditor) slotText() string {
+	if e.t.active != e.index {
+		return ""
+	}
+	var lines []string
+	seen := map[string]bool{}
+	for _, r := range e.draft.Regions {
+		for _, id := range r.Devices {
+			ctl := e.t.a.byID[id]
+			if ctl == nil || seen[id] {
+				continue
+			}
+			seen[id] = true
+			c, _, ok := ctl.w.peekSlot()
+			if !ok {
+				lines = append(lines, fmt.Sprintf("%s: —", ctl.name()))
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("%s: H %d° S %d V %d  (S %.1f%% V %.1f%%)",
+				ctl.name(), c.H, c.S, c.V, float64(c.S)/10, float64(c.V)/10))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // startRate shows, once a second, how many capture frames arrived and how
 // many messages went out to the bulbs.
 func (e *presetEditor) startRate() {
@@ -399,6 +433,7 @@ func (e *presetEditor) startRate() {
 			e.rate.SetText("Live rate appears while the preview runs")
 		}
 		frames, sends = f, s
+		e.slots.SetText(e.slotText())
 		return true
 	}
 	update()

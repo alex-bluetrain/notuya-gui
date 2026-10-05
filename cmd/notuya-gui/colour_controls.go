@@ -185,9 +185,10 @@ func newColourControls(surface *cairo.Surface, size int, cb colourCallbacks) *co
 	brightIcon := gtk.NewImageFromIconName("display-brightness-symbolic")
 	brightIcon.AddCSSClass("dim-label")
 	cc.BrightRow.Append(brightIcon)
-	// 0–100 % in 0.1 steps: colour brightness is DP 24/28's V, 0–1000. White
-	// mode's DP 22 bottoms out at 1 %, and notuya-go clamps lower values up.
-	cc.Bright = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 0, 100, 0.1)
+	// 1–100 % in 0.1 steps: colour brightness is DP 24/28's V, 0–1000, but
+	// bulbs stay dark below V 10 (off is the power switch's job). White
+	// mode's DP 22 also bottoms out at 1 %.
+	cc.Bright = gtk.NewScaleWithRange(gtk.OrientationHorizontal, brightMin, 100, 0.1)
 	cc.Bright.SetHExpand(true)
 	cc.Bright.SetDrawValue(false)
 	cc.Bright.SetRoundDigits(1)
@@ -251,6 +252,10 @@ func (cc *colourControls) SetHS(h, s float64) {
 func (cc *colourControls) Sel() dp.HSV {
 	return colour.HSV(cc.hue, cc.sat, cc.Bright.Value()/100)
 }
+
+// brightMin is the slider's bottom stop: V 10, the dimmest value a
+// colour-mode bulb still lights at.
+const brightMin = 1.0
 
 // pctText formats a brightness percentage, keeping the tenth below 10 %
 // where it is a visible step.

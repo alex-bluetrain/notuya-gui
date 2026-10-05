@@ -3,6 +3,7 @@ package screensync
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"time"
 
@@ -30,6 +31,7 @@ type Options struct {
 	Sources    []Source
 	Regions    []Region
 	Brightness float64 // multiplier, 1 = unchanged
+	Mapping    Mapping
 	// OnFrame receives each region's colour (after brightness). It runs on
 	// an engine goroutine; hop to the GTK thread before touching widgets.
 	OnFrame func([]dp.HSV)
@@ -37,6 +39,22 @@ type Options struct {
 	// broken), with the reason. It is not called after Stop.
 	OnStop func(error)
 }
+
+// Mapping is how a region's screen colour becomes a bulb colour.
+type Mapping int
+
+const (
+	// MapLight decodes the screen's sRGB to linear light first, so the
+	// bulb gives off what that part of the screen does: dark stays dark.
+	MapLight Mapping = iota
+	// MapValues sends the screen's sRGB values as they are: the bulb's
+	// HSV is a colour picker's for that pixel. Dark colours glow brighter
+	// and paler than the screen.
+	MapValues
+)
+
+// minV is the dimmest colour value a bulb still lights at (1 %).
+const minV = 10
 
 const (
 	frameTimeout   = 250 * time.Millisecond
@@ -55,6 +73,7 @@ type Engine struct {
 	rects      []Rect
 	bindings   [][]LightSink
 	brightness float64
+	mapping    Mapping
 	rows       [][]byte // latest row per stream (nil until its first frame)
 	stopped    bool
 }
@@ -75,6 +94,7 @@ func Start(opts Options) (*Engine, error) {
 		ctx:        ctx,
 		cancel:     cancel,
 		brightness: opts.Brightness,
+		mapping:    opts.Mapping,
 		rows:       make([][]byte, len(opts.Sources)),
 	}
 	for _, src := range opts.Sources {
@@ -131,6 +151,13 @@ func (e *Engine) SetBrightness(f float64) {
 	e.mu.Unlock()
 }
 
+// SetMapping changes how screen colours map to bulb colours, live.
+func (e *Engine) SetMapping(m Mapping) {
+	e.mu.Lock()
+	e.mapping = m
+	e.mu.Unlock()
+}
+
 // Stop ends the sync. Lights keep showing their last colour. It blocks until the capture pipelines are down: never call it on
 // the GTK thread.
 func (e *Engine) Stop() {
@@ -179,6 +206,21 @@ func (e *Engine) pump(i int, s *stream) {
 	}
 }
 
+// decode maps an 8-bit sRGB value to colour.FromRGB's 0–1 input, per
+// Mapping: linear light (IEC 61966-2-1) or the value as is.
+var decode = func() (t [2][256]float64) {
+	for i := range 256 {
+		c := float64(i) / 255
+		t[MapValues][i] = c
+		if c <= 0.04045 {
+			t[MapLight][i] = c / 12.92
+		} else {
+			t[MapLight][i] = math.Pow((c+0.055)/1.055, 2.4)
+		}
+	}
+	return t
+}()
+
 // frame stores stream i's row and pushes the combined colours. A region
 // spanning several sources is the mean of each source's average, weighted
 // by how much of the region that source covers.
@@ -189,6 +231,7 @@ func (e *Engine) frame(i int, row []byte) {
 	}
 	copy(e.rows[i], row)
 	colours := make([]dp.HSV, len(e.rects))
+	dec := &decode[e.mapping]
 	for r := range e.rects {
 		var sum [3]float64
 		var total float64
@@ -198,15 +241,18 @@ func (e *Engine) frame(i int, row []byte) {
 			}
 			w := s.weights(e.rects[r : r+1])[0]
 			for c := range 3 {
-				sum[c] += float64(e.rows[si][r*4+c]) * w
+				sum[c] += dec[e.rows[si][r*4+c]] * w
 			}
 			total += w
 		}
 		if total > 0 {
 			// Stay in floats down to the bulb's 0–1000 scale: the mean
 			// of many pixels is finer than one 8-bit step.
-			f := e.brightness / (255 * total)
-			colours[r] = colour.FromRGB(sum[0]*f, sum[1]*f, sum[2]*f)
+			f := e.brightness / total
+			c := colour.FromRGB(sum[0]*f, sum[1]*f, sum[2]*f)
+			// Bulbs stay dark below V 10; keep the lamp lit on black.
+			c.V = max(c.V, minV)
+			colours[r] = c
 		}
 	}
 	type send struct {

@@ -61,8 +61,11 @@ type Config struct {
 // ScreenSync holds the Screen Sync presets. Brightness scales every region
 // colour (0.25-2.0); zero means unset and reads as 1.
 type ScreenSync struct {
-	Brightness float64      `json:"brightness"`
-	Presets    []SyncPreset `json:"presets"`
+	Brightness float64 `json:"brightness"`
+	// Mapping is "light" (match the screen's light output, the default)
+	// or "values" (send the screen's sRGB values as HSV, brighter).
+	Mapping string       `json:"mapping,omitempty"`
+	Presets []SyncPreset `json:"presets"`
 }
 
 // SyncPreset is a capture target and the regions drawn on it.

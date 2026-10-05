@@ -55,6 +55,7 @@ type writer struct {
 	slot     dp.HSV
 	slotMode dp.ChangeMode
 	dirty    bool
+	hasSlot  bool // Live has been called at least once
 	queue    []writeReq
 	closed   bool
 }
@@ -76,8 +77,16 @@ func (w *writer) setSlot(c dp.HSV, mode dp.ChangeMode) {
 	if w.closed {
 		return
 	}
-	w.slot, w.slotMode, w.dirty = c, mode, true
+	w.slot, w.slotMode, w.dirty, w.hasSlot = c, mode, true, true
 	w.wake()
+}
+
+// peekSlot returns the slot's current value for display; ok is false until
+// the first Live.
+func (w *writer) peekSlot() (c dp.HSV, mode dp.ChangeMode, ok bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.slot, w.slotMode, w.hasSlot
 }
 
 func (w *writer) takeSlot() (dp.HSV, dp.ChangeMode, bool) {

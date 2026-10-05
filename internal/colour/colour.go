@@ -45,14 +45,34 @@ func FromRGB(r, g, b float64) dp.HSV {
 	return HSV(h, d/maxc, maxc)
 }
 
+// Display converts a bulb colour taken as linear light (what Screen Sync
+// sends) to the 8-bit sRGB a screen needs to show the same light.
+func Display(c dp.HSV) RGB {
+	r, g, b := toFloat(c)
+	enc := func(x float64) uint8 {
+		if x <= 0.0031308 {
+			x *= 12.92
+		} else {
+			x = 1.055*math.Pow(x, 1/2.4) - 0.055
+		}
+		return uint8(math.Round(clamp01(x) * 255))
+	}
+	return RGB{enc(r), enc(g), enc(b)}
+}
+
 // ToRGB converts a bulb colour to 8-bit RGB for display.
 func ToRGB(c dp.HSV) RGB {
+	r, g, b := toFloat(c)
+	to8 := func(x float64) uint8 { return uint8(math.Round(x * 255)) }
+	return RGB{to8(r), to8(g), to8(b)}
+}
+
+func toFloat(c dp.HSV) (r, g, b float64) {
 	h := math.Mod(float64(c.H)/360, 1)
 	s, v := float64(c.S)/1000, float64(c.V)/1000
 	i := math.Floor(h * 6)
 	f := h*6 - i
 	p, q, t := v*(1-s), v*(1-s*f), v*(1-s*(1-f))
-	var r, g, b float64
 	switch int(i) % 6 {
 	case 0:
 		r, g, b = v, t, p
@@ -67,8 +87,7 @@ func ToRGB(c dp.HSV) RGB {
 	default:
 		r, g, b = v, p, q
 	}
-	to8 := func(x float64) uint8 { return uint8(math.Round(x * 255)) }
-	return RGB{to8(r), to8(g), to8(b)}
+	return r, g, b
 }
 
 func clamp01(x float64) float64 { return min(max(x, 0), 1) }

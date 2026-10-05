@@ -3,8 +3,6 @@ package main
 import (
 	"math"
 
-	"github.com/alex-bluetrain/notuya-go/pkg/dp"
-
 	"github.com/alex-bluetrain/notuya-gui/internal/colour"
 	"github.com/diamondburned/gotk4-layer-shell/pkg/gtk4layershell"
 	"github.com/diamondburned/gotk4/pkg/cairo"
@@ -124,8 +122,7 @@ func (o *syncOverlay) SetRegions(rs []overlayRegion) {
 }
 
 // SetColour updates one region's swatch without a full replace.
-func (o *syncOverlay) SetColour(i int, hsv dp.HSV) {
-	c := colour.ToRGB(hsv)
+func (o *syncOverlay) SetColour(i int, c colour.RGB) {
 	if i < len(o.regions) && o.regions[i].Colour != c {
 		o.regions[i].Colour = c
 		o.redraw()

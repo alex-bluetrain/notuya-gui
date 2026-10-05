@@ -68,7 +68,7 @@ func eventually(t *testing.T, what string, cond func() bool) {
 }
 
 func near(c dp.HSV, b colour.RGB) bool {
-	a := colour.ToRGB(c)
+	a := colour.Display(c)
 	d := func(x, y uint8) bool { return int(x)-int(y) <= 2 && int(y)-int(x) <= 2 }
 	return d(a.R, b.R) && d(a.G, b.G) && d(a.B, b.B)
 }
@@ -120,7 +120,8 @@ func TestRegionSpanningSourcesIsAreaWeighted(t *testing.T) {
 		// 3/4 of the region on the red source, 1/4 on the blue one.
 		Regions: []Region{{Rect: Rect{0.2, 0, 0.4, 1}, Lights: []LightSink{l}}},
 	})
-	want := colour.RGB{R: 191, B: 64}
+	// Mixed in light: 3/4 red + 1/4 blue, not 3/4 of red's sRGB code.
+	want := colour.RGB{R: 225, B: 137}
 	eventually(t, "weighted colour", func() bool { c, _ := l.snapshot(); return near(c, want) })
 }
 
@@ -131,9 +132,32 @@ func TestBrightnessScalesAndClamps(t *testing.T) {
 		Brightness: 0.5,
 		Regions:    []Region{{Rect: Rect{0, 0, 1, 1}, Lights: []LightSink{l}}},
 	})
-	eventually(t, "half brightness", func() bool { c, _ := l.snapshot(); return near(c, colour.RGB{R: 64, G: 32, B: 16}) })
-	e.SetBrightness(4)
-	eventually(t, "clamped boost", func() bool { c, _ := l.snapshot(); return near(c, colour.RGB{R: 255, G: 255, B: 128}) })
+	eventually(t, "half brightness", func() bool { c, _ := l.snapshot(); return near(c, colour.RGB{R: 92, G: 45, B: 22}) })
+	e.SetBrightness(8)
+	eventually(t, "clamped boost", func() bool { c, _ := l.snapshot(); return near(c, colour.RGB{R: 255, G: 172, B: 96}) })
+}
+
+func TestBlackKeepsTheBulbLit(t *testing.T) {
+	l := &fakeLight{}
+	startEngine(t, Options{
+		Sources:    []Source{solid(0x000000, Rect{0, 0, 1, 1})},
+		Brightness: 1,
+		Regions:    []Region{{Rect: Rect{0, 0, 1, 1}, Lights: []LightSink{l}}},
+	})
+	eventually(t, "dimmest lit value", func() bool { c, n := l.snapshot(); return n > 0 && c.V == minV })
+}
+
+func TestMappingSwitchesLive(t *testing.T) {
+	l := &fakeLight{}
+	e := startEngine(t, Options{
+		Sources:    []Source{solid(0x404040, Rect{0, 0, 1, 1})},
+		Brightness: 1,
+		Regions:    []Region{{Rect: Rect{0, 0, 1, 1}, Lights: []LightSink{l}}},
+	})
+	// 0x40 is 25 % as a value but 5 % as light.
+	eventually(t, "light", func() bool { c, _ := l.snapshot(); return c.V >= 49 && c.V <= 52 })
+	e.SetMapping(MapValues)
+	eventually(t, "values", func() bool { c, _ := l.snapshot(); return c.V >= 249 && c.V <= 253 })
 }
 
 func TestUnboundLightStopsGettingFrames(t *testing.T) {

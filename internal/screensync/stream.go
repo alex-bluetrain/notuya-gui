@@ -37,9 +37,13 @@ func (r Rect) within(frame Rect) Rect {
 
 // Shaders run in two passes so the cost is bounded at any resolution:
 // an 8×8 box reduce, then one fragment per region that samples a fixed
-// 32×32 grid of the reduced texture. Averaging happens in sRGB, which is
-// fine for ambient light; do not "fix" it to linear.
-const shaderHeader = "#version 100\n#ifdef GL_ES\nprecision highp float;\n#endif\nvarying vec2 v_texcoord;\nuniform sampler2D tex;\n"
+// 32×32 grid of the reduced texture. Each pass decodes sRGB to linear light,
+// averages, and re-encodes, so the 8-bit textures between passes keep
+// sRGB's dark-end precision while the mean is of light, not of codes.
+const shaderHeader = "#version 100\n#ifdef GL_ES\nprecision highp float;\n#endif\nvarying vec2 v_texcoord;\nuniform sampler2D tex;\n" +
+	"vec3 dec(vec3 c){ return mix(c/12.92, pow((c+0.055)/1.055, vec3(2.4)), step(0.04045, c)); }\n" +
+	"vec3 enc(vec3 c){ return mix(c*12.92, 1.055*pow(c, vec3(1.0/2.4))-0.055, step(0.0031308, c)); }\n" +
+	"vec3 lin(vec2 p){ return dec(texture2D(tex, p).rgb); }\n"
 
 // The box pass writes a fixed reducedW×reducedH texture whatever the input
 // size, so a window that changes size (e.g. goes fullscreen) never forces
@@ -50,9 +54,9 @@ var boxShader = shaderHeader + fmt.Sprintf(`
 void main(){
   vec2 cell = vec2(1.0/%d.0, 1.0/%d.0);
   vec2 base = floor(v_texcoord/cell)*cell;
-  vec4 s = vec4(0.0);
-  for(int y=0;y<8;y++) for(int x=0;x<8;x++) s += texture2D(tex, base+(vec2(float(x),float(y))+0.5)/8.0*cell);
-  gl_FragColor = s/64.0;
+  vec3 s = vec3(0.0);
+  for(int y=0;y<8;y++) for(int x=0;x<8;x++) s += lin(base+(vec2(float(x),float(y))+0.5)/8.0*cell);
+  gl_FragColor = vec4(enc(s/64.0), 1.0);
 }`, reducedW, reducedH)
 
 var regionShader = func() string {
@@ -65,10 +69,10 @@ var regionShader = func() string {
 	for i := range MaxRegions {
 		fmt.Fprintf(&b, "  if(i==%[1]d) r=vec4(r%[1]dx,r%[1]dy,r%[1]dw,r%[1]dh);\n", i)
 	}
-	b.WriteString(`  vec4 s = vec4(0.0);
+	b.WriteString(`  vec3 s = vec3(0.0);
   for(int y=0;y<32;y++) for(int x=0;x<32;x++)
-    s += texture2D(tex, r.xy + (vec2(float(x),float(y))+0.5)/32.0*r.zw);
-  gl_FragColor = s/1024.0;
+    s += lin(r.xy + (vec2(float(x),float(y))+0.5)/32.0*r.zw);
+  gl_FragColor = vec4(enc(s/1024.0), 1.0);
 }`)
 	return b.String()
 }()

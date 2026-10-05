@@ -1,6 +1,7 @@
 package colour
 
 import (
+	"math"
 	"testing"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/dp"
@@ -51,6 +52,22 @@ func TestToRGB(t *testing.T) {
 	for _, c := range cases {
 		if got := ToRGB(c.in); got != c.want {
 			t.Errorf("ToRGB(%+v) = %+v, want %+v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestDisplayInvertsScreenSyncDecode(t *testing.T) {
+	// #1A1B26 decoded to linear light, then shown again, round-trips.
+	lin := func(v float64) float64 { return math.Pow((v/255+0.055)/1.055, 2.4) }
+	c := FromRGB(lin(0x1a), lin(0x1b), lin(0x26))
+	if c.V > 25 {
+		t.Fatalf("dark background sent at V=%d, want ~19", c.V)
+	}
+	got := Display(c)
+	for i, w := range []uint8{0x1a, 0x1b, 0x26} {
+		g := []uint8{got.R, got.G, got.B}[i]
+		if d := int(g) - int(w); d < -2 || d > 2 {
+			t.Fatalf("Display = %v, want #1A1B26", got)
 		}
 	}
 }

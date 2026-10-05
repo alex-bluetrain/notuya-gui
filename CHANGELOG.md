@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.5.0](https://github.com/alex-bluetrain/notuya-gui/compare/v1.4.1...v1.5.0) (2026-10-05)
+
+
+### Features
+
+* **gui:** one editor window for creating and editing Screen Sync presets ([3c9f454](https://github.com/alex-bluetrain/notuya-gui/commit/3c9f4544e02f930468a52537d4b0169ae3dc9f3c))
+* **gui:** show Screen Sync presets as tiles like Scenes ([ceb131d](https://github.com/alex-bluetrain/notuya-gui/commit/ceb131d9e903fca1f0ec2d20795564690e5936cc))
+
+
+### Bug Fixes
+
+* **gui:** require notuya-go v1.2.0 ([5d51973](https://github.com/alex-bluetrain/notuya-gui/commit/5d51973fa4211a49801bd09d42db80b4bce7f431))
+* **gui:** send every bulb write through one ordered writer ([fc9344e](https://github.com/alex-bluetrain/notuya-gui/commit/fc9344e9d13b84457a54863008282cdf821dec86))
+
 ## [1.4.1](https://github.com/alex-bluetrain/notuya-gui/compare/v1.4.0...v1.4.1) (2026-10-05)
 
 

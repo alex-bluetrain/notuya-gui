@@ -19,9 +19,10 @@ servers — don't.
 
 ## Features
 
-- **Live colour control.** Drag the colour wheel and the bulbs follow in real
-  time. Switch to white mode for colour temperature, and choose between smooth
-  fades and instant changes.
+- **Live colour control.** Drag the colour wheel or brightness slider (down
+  to 0.1%) and the bulbs follow in real time. Switch to white mode for colour
+  temperature, and choose between smooth fades and instant changes. The bulb
+  remembers the colour once you leave the Lights tab or quit.
 - **Scenes.** Save a look — colour, brightness and power per light — and apply
   it with one click.
 - **Screen Sync.** Pick regions of a monitor or window and the bulbs follow

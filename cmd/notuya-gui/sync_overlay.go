@@ -4,6 +4,8 @@ import (
 	"math"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/dp"
+
+	"github.com/alex-bluetrain/notuya-gui/internal/colour"
 	"github.com/diamondburned/gotk4-layer-shell/pkg/gtk4layershell"
 	"github.com/diamondburned/gotk4/pkg/cairo"
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"
@@ -22,7 +24,7 @@ const (
 type overlayRegion struct {
 	Name   string
 	Rect   [4]float64 // normalised to the canvas
-	Colour dp.RGB
+	Colour colour.RGB
 }
 
 // syncOverlay is the region editor drawn over the target: one layer-shell
@@ -122,7 +124,8 @@ func (o *syncOverlay) SetRegions(rs []overlayRegion) {
 }
 
 // SetColour updates one region's swatch without a full replace.
-func (o *syncOverlay) SetColour(i int, c dp.RGB) {
+func (o *syncOverlay) SetColour(i int, hsv dp.HSV) {
+	c := colour.ToRGB(hsv)
 	if i < len(o.regions) && o.regions[i].Colour != c {
 		o.regions[i].Colour = c
 		o.redraw()

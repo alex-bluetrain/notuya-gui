@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/dp"
+
+	"github.com/alex-bluetrain/notuya-gui/internal/colour"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	coreglib "github.com/diamondburned/gotk4/pkg/glib/v2"
@@ -59,7 +61,7 @@ type syncTab struct {
 
 type regionSwatch struct {
 	da  *gtk.DrawingArea
-	rgb dp.RGB
+	c   dp.HSV
 	set bool
 }
 
@@ -344,13 +346,13 @@ func presetIdleCSS(class, id string) string {
 	hue := float64(h%360) / 360
 	a := hsvRGB(hue, 0.55, 0.75)
 	b := hsvRGB(math.Mod(hue+0.12, 1), 0.65, 0.55)
-	return tileGradientCSS(class, []dp.RGB{a, b})
+	return tileGradientCSS(class, []colour.RGB{a, b})
 }
 
 // tileGradientCSS is the scene-tile fill: a diagonal gradient across the
 // colours under a bottom vignette that keeps the name legible (earlier
 // background layers paint on top).
-func tileGradientCSS(class string, cs []dp.RGB) string {
+func tileGradientCSS(class string, cs []colour.RGB) string {
 	stops := make([]string, 0, len(cs)+1)
 	for _, c := range cs {
 		stops = append(stops, fmt.Sprintf("rgb(%d,%d,%d)", c.R, c.G, c.B))
@@ -364,12 +366,20 @@ func tileGradientCSS(class string, cs []dp.RGB) string {
 
 // paintLive fills the running tile with its regions' live colours, at most
 // five times a second.
-func (t *syncTab) paintLive(i int, cs []dp.RGB) {
+func (t *syncTab) paintLive(i int, cs []dp.HSV) {
 	if i < 0 || len(cs) == 0 || time.Since(t.lastPaint) < 200*time.Millisecond {
 		return
 	}
 	t.lastPaint = time.Now()
-	t.css.LoadFromString(t.tileCSS + tileGradientCSS(fmt.Sprintf("sync-tile-%d", i), cs))
+	t.css.LoadFromString(t.tileCSS + tileGradientCSS(fmt.Sprintf("sync-tile-%d", i), toRGB(cs)))
+}
+
+func toRGB(cs []dp.HSV) []colour.RGB {
+	out := make([]colour.RGB, len(cs))
+	for i, c := range cs {
+		out[i] = colour.ToRGB(c)
+	}
+	return out
 }
 
 // syncSwitches reflects t.active on the tiles; a stopped tile gets its idle
@@ -538,7 +548,7 @@ func (t *syncTab) run(i int, repick bool) {
 				Sources:    capture.Sources(),
 				Regions:    regions,
 				Brightness: brightness,
-				OnFrame: func(cs []dp.RGB) {
+				OnFrame: func(cs []dp.HSV) {
 					captureFrames.Add(1)
 					coreglib.IdleAdd(func() { t.showColours(i, cs) })
 				},
@@ -546,15 +556,6 @@ func (t *syncTab) run(i int, repick bool) {
 					coreglib.IdleAdd(func() {
 						if t.active == i {
 							t.stop("Capture ended — sync stopped: " + err.Error())
-						}
-					})
-				},
-				OnLightTrouble: func(l screensync.LightSink, ok bool) {
-					coreglib.IdleAdd(func() {
-						if ok {
-							t.showBanner("")
-						} else if ctl, isCtl := l.(*control); isCtl {
-							t.showBanner(ctl.name() + " is not responding — retrying")
 						}
 					})
 				},
@@ -682,8 +683,8 @@ func (t *syncTab) stop(msg string) {
 	t.active = -1
 	t.syncSwitches()
 	t.showBanner(msg)
-	// Stop blocks while each bulb persists its final colour: off the GTK thread.
-	// The lights unlock once their streams have closed.
+	// Stop waits for the capture pumps: off the GTK thread. The bulbs keep
+	// showing the last frame's colour (unsaved, on DP 28).
 	if eng != nil {
 		go func() {
 			eng.Stop()
@@ -694,7 +695,7 @@ func (t *syncTab) stop(msg string) {
 }
 
 // showColours paints the live region swatches (editor and overlay).
-func (t *syncTab) showColours(i int, cs []dp.RGB) {
+func (t *syncTab) showColours(i int, cs []dp.HSV) {
 	if t.active != i {
 		return
 	}
@@ -703,8 +704,8 @@ func (t *syncTab) showColours(i int, cs []dp.RGB) {
 		for ri, c := range cs {
 			if ri < len(e.swatches) {
 				s := e.swatches[ri]
-				if !s.set || s.rgb != c {
-					s.rgb, s.set = c, true
+				if !s.set || s.c != c {
+					s.c, s.set = c, true
 					s.da.QueueDraw()
 				}
 			}
@@ -732,8 +733,9 @@ func (t *syncTab) syncedDevices() map[string]bool {
 }
 
 func (t *syncTab) updateLock() {
+	t.a.synced = t.syncedDevices()
 	if t.a.onSyncLock != nil {
-		t.a.onSyncLock(t.syncedDevices())
+		t.a.onSyncLock(t.a.synced)
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"syscall"
@@ -119,7 +120,7 @@ func TestWithBulbFreshSessionFailureIsNotRetriedButRecoversNextCommand(t *testin
 	c, dials := fakeControl(t, s1, s2)
 	ctx := context.Background()
 
-	err := c.SetColour(ctx, dp.RGB{R: 1, G: 2, B: 3})
+	err := c.SetPower(ctx, true)
 	if !errors.Is(err, syscall.ECONNRESET) {
 		t.Fatalf("want the command error back, got %v", err)
 	}
@@ -127,7 +128,7 @@ func TestWithBulbFreshSessionFailureIsNotRetriedButRecoversNextCommand(t *testin
 		t.Fatalf("dials=%d s1.closed=%d sess=%v; a fresh session must fail without retry and be dropped", *dials, s1.closed, c.sess)
 	}
 	// The next command reconnects on its own.
-	if err := c.SetColour(ctx, dp.RGB{R: 1, G: 2, B: 3}); err != nil {
+	if err := c.SetPower(ctx, true); err != nil {
 		t.Fatalf("next command should reconnect: %v", err)
 	}
 	if *dials != 2 || c.sess != s2 {
@@ -171,21 +172,6 @@ func TestWithBulbFailureOnLiveSessionDoesNotReconnect(t *testing.T) {
 	}
 }
 
-func TestWithBulbRefusedWhileLiveStreamOwnsBulb(t *testing.T) {
-	c, dials := fakeControl(t)
-	c.live = &streamer{} // what BeginLive leaves behind; never started here
-	err := c.SetPower(context.Background(), true)
-	if !errors.Is(err, errLiveStream) {
-		t.Fatalf("want errLiveStream, got %v", err)
-	}
-	if *dials != 0 {
-		t.Fatalf("dialled %d times beside a live stream; want 0", *dials)
-	}
-	if _, err := c.Refresh(context.Background()); !errors.Is(err, errLiveStream) {
-		t.Fatalf("Refresh: want errLiveStream, got %v", err)
-	}
-}
-
 func TestReconfigureDropsSessionOnlyWhenDeviceChanges(t *testing.T) {
 	s1 := &fakeSession{}
 	s2 := &fakeSession{}
@@ -220,171 +206,165 @@ func TestRefreshParsesStatus(t *testing.T) {
 	}
 }
 
-// liveSession is a session.Session for the streamer: safe for its
-// goroutines, it counts requests and can fail the open to simulate a
-// dropped bulb.
-type liveSession struct {
-	mu      sync.Mutex
-	openErr error
-	calls   int
-	closed  bool
-	done    chan struct{}
+// recSession records every Control body and whether it waited for an ack.
+// gate, when set, holds each Control until a value arrives, so a test can
+// pile up writes behind one in flight.
+type recSession struct {
+	mu     sync.Mutex
+	writes []recWrite
+	gate   chan struct{}
 }
 
-func (s *liveSession) count() {
+type recWrite struct {
+	dps  map[string]any
+	wait bool
+}
+
+func (s *recSession) Query(context.Context) ([]byte, error) {
+	return []byte(`{"dps":{"20":true,"21":"colour","24":"000003e803e8"}}`), nil
+}
+
+func (s *recSession) Control(ctx context.Context, body []byte, wait bool) error {
+	if s.gate != nil {
+		select {
+		case <-s.gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	var m struct {
+		Data struct {
+			DPS map[string]any `json:"dps"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(body, &m)
 	s.mu.Lock()
-	s.calls++
-	s.mu.Unlock()
-}
-
-func (s *liveSession) Query(context.Context) ([]byte, error) {
-	s.count()
-	return []byte(`{"dps":{}}`), nil
-}
-func (s *liveSession) Control(context.Context, []byte, bool) error { s.count(); return nil }
-func (s *liveSession) Refresh(context.Context, []int) error        { s.count(); return nil }
-func (s *liveSession) Heartbeat(context.Context, bool) error       { s.count(); return nil }
-func (s *liveSession) Pushes() <-chan session.Push                 { return nil }
-func (s *liveSession) Done() <-chan struct{}                       { return s.done }
-func (s *liveSession) Err() error                                  { return nil }
-
-func (s *liveSession) Close() error {
-	s.mu.Lock()
-	s.closed = true
+	s.writes = append(s.writes, recWrite{m.Data.DPS, wait})
 	s.mu.Unlock()
 	return nil
 }
 
-func liveControl(sess *liveSession) *control {
+func (s *recSession) Refresh(context.Context, []int) error  { return nil }
+func (s *recSession) Heartbeat(context.Context, bool) error { return nil }
+func (s *recSession) Pushes() <-chan session.Push           { return nil }
+func (s *recSession) Done() <-chan struct{}                 { return nil }
+func (s *recSession) Err() error                            { return nil }
+func (s *recSession) Close() error                          { return nil }
+
+func (s *recSession) snapshot() []recWrite {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]recWrite(nil), s.writes...)
+}
+
+func recControl(s *recSession) *control {
 	c := newControl(Device{DeviceID: "dev1", Name: "Desk"})
-	c.dial = func(context.Context, string, []byte) (session.Session, error) {
-		if sess.openErr != nil {
-			return nil, sess.openErr
-		}
-		return sess, nil
-	}
+	c.dial = func(context.Context, string, []byte) (session.Session, error) { return s, nil }
 	return c
 }
 
-func TestLiveStreamBelongsToItsOwner(t *testing.T) {
-	sess := &liveSession{}
-	c := liveControl(sess)
-	sync1, drag := new(int), new(int)
-	seed := dp.RGB{R: 1}
-
-	if err := c.BeginLive(sync1, seed, dp.ChangeFade); err != nil {
-		t.Fatal(err)
-	}
-	if !c.Streaming() {
-		t.Fatal("Streaming() = false after BeginLive")
-	}
-	if err := c.BeginLive(sync1, seed, dp.ChangeFade); err != nil {
-		t.Fatalf("re-begin by the same owner must be a no-op, got %v", err)
-	}
-	if err := c.BeginLive(drag, seed, dp.ChangeFade); !errors.Is(err, errLiveStream) {
-		t.Fatalf("another owner must be refused with errLiveStream, got %v", err)
-	}
-	c.EndLive(drag) // a Lights drag ending must not close sync's stream
-	if !c.Streaming() {
-		t.Fatal("EndLive from a different owner closed the stream")
-	}
-	c.SetLiveChangeMode(drag, dp.ChangeJump)
-	if c.liveMode != dp.ChangeFade {
-		t.Fatal("SetLiveChangeMode from a different owner changed the mode")
-	}
-	c.EndLive(sync1)
-	if c.Streaming() || c.Dead() != nil {
-		t.Fatal("owner's EndLive must release the bulb")
-	}
-	if !sess.closed {
-		t.Fatal("stream session not closed on EndLive")
-	}
-}
-
-func TestDeadFiresWhenStreamSessionDrops(t *testing.T) {
-	c := liveControl(&liveSession{openErr: syscall.ECONNREFUSED})
-	owner := new(int)
-	if err := c.BeginLive(owner, dp.RGB{}, dp.ChangeFade); err != nil {
-		t.Fatal(err)
-	}
-	dead := c.Dead()
-	if dead == nil {
-		t.Fatal("Dead() is nil while streaming")
-	}
-	select {
-	case <-dead:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Dead() did not fire after the stream failed")
-	}
-	c.UpdateLive(owner, dp.RGB{R: 9}) // must not block on a dead stream
-	c.EndLive(owner)
-	if c.Streaming() {
-		t.Fatal("still streaming after EndLive")
-	}
-}
-
-func TestDeadStaysOpenWhileStreamIsHealthy(t *testing.T) {
-	sess := &liveSession{}
-	c := liveControl(sess)
-	owner := new(int)
-	if err := c.BeginLive(owner, dp.RGB{R: 1}, dp.ChangeFade); err != nil {
-		t.Fatal(err)
-	}
-	c.UpdateLive(owner, dp.RGB{R: 2})
-	select {
-	case <-c.Dead():
-		t.Fatal("Dead() fired on a healthy stream")
-	case <-time.After(200 * time.Millisecond):
-	}
-	c.EndLive(owner)
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	if sess.calls == 0 {
-		t.Fatal("stream sent nothing")
-	}
-}
-
-// slowSession blocks every Control until two are in flight at once, so it
-// only completes when commands genuinely overlap.
-type slowSession struct {
-	fakeSession
-	mu       sync.Mutex
-	inFlight int
-	both     chan struct{}
-}
-
-func (s *slowSession) Control(ctx context.Context, _ []byte, _ bool) error {
-	s.mu.Lock()
-	s.inFlight++
-	if s.inFlight == 2 {
-		close(s.both)
-	}
-	s.mu.Unlock()
-	select {
-	case <-s.both:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func TestWithBulbRunsCommandsConcurrently(t *testing.T) {
-	s := &slowSession{both: make(chan struct{})}
-	c := newControl(Device{DeviceID: "dev1", Name: "Desk"})
-	c.dial = func(context.Context, string, []byte) (session.Session, error) { return s, nil }
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	// Dial once up front so both commands share the session.
-	if _, _, _, err := c.acquire(ctx); err != nil {
-		t.Fatal(err)
-	}
-
-	errs := make(chan error, 2)
-	go func() { errs <- c.SetPower(ctx, true) }()
-	go func() { errs <- c.SetColour(ctx, dp.RGB{R: 255}) }()
-	for range 2 {
-		if err := <-errs; err != nil {
-			t.Fatalf("commands did not overlap: %v", err)
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
 		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func hsvDP(c dp.HSV) string { h, _ := c.Hex(); return h }
+
+func TestLiveSendsOnlyTheNewestColour(t *testing.T) {
+	s := &recSession{gate: make(chan struct{})}
+	c := recControl(s)
+	defer c.Close()
+	c.Live(dp.HSV{H: 1, S: 1000, V: 1000}, dp.ChangeJump) // held in flight by the gate
+	for v := 10; v <= 500; v += 10 {
+		c.Live(dp.HSV{H: 2, S: 1000, V: v}, dp.ChangeJump)
+	}
+	close(s.gate)
+	last := dp.HSV{H: 2, S: 1000, V: 500}
+	waitFor(t, "newest colour", func() bool {
+		w := s.snapshot()
+		return len(w) > 0 && w[len(w)-1].dps["28"] != nil
+	})
+	time.Sleep(20 * time.Millisecond)
+	w := s.snapshot()
+	if len(w) > 3 {
+		t.Fatalf("%d sends; scrubbed values should be skipped", len(w))
+	}
+	for _, x := range w {
+		if x.wait || x.dps["24"] != nil {
+			t.Fatalf("Live wrote %v (wait=%v); want DP 28 only, unacked", x.dps, x.wait)
+		}
+	}
+	if got := w[len(w)-1].dps["28"].(string); got[1:13] != hsvDP(last) {
+		t.Fatalf("last live %s, want colour %s", got, hsvDP(last))
+	}
+}
+
+func TestSaveWritesTheShownColourToDP24(t *testing.T) {
+	s := &recSession{}
+	c := recControl(s)
+	defer c.Close()
+	ctx := context.Background()
+	if err := c.SaveWait(ctx); err != nil || len(s.snapshot()) != 0 {
+		t.Fatalf("Save with nothing shown: err=%v writes=%v; want a no-op", err, s.snapshot())
+	}
+	col := dp.HSV{H: 120, S: 500, V: 250}
+	c.Live(col, dp.ChangeJump)
+	if err := c.SaveWait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	w := s.snapshot()
+	if len(w) != 2 || w[1].dps["24"] != hsvDP(col) || !w[1].wait {
+		t.Fatalf("writes %v; want DP 28 then an acked DP 24 = %s", w, hsvDP(col))
+	}
+	if err := c.SaveWait(ctx); err != nil || len(s.snapshot()) != 2 {
+		t.Fatal("a second Save must not rewrite an already saved colour")
+	}
+}
+
+func TestCommandsRunInOrderAfterEarlierLiveColour(t *testing.T) {
+	s := &recSession{}
+	c := recControl(s)
+	defer c.Close()
+	c.Live(dp.HSV{H: 1, S: 1000, V: 1000}, dp.ChangeJump)
+	c.Power(false)
+	c.Power(true)
+	if err := c.SaveWait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	w := s.snapshot()
+	if len(w) != 4 || w[0].dps["28"] == nil || w[1].dps["20"] != false || w[2].dps["20"] != true || w[3].dps["24"] == nil {
+		t.Fatalf("writes %v; want live, off, on, save", w)
+	}
+}
+
+func TestCloseSavesTheShownColour(t *testing.T) {
+	s := &recSession{}
+	c := recControl(s)
+	col := dp.HSV{H: 30, S: 800, V: 600}
+	c.Live(col, dp.ChangeJump)
+	c.Close()
+	w := s.snapshot()
+	if len(w) == 0 || w[len(w)-1].dps["24"] != hsvDP(col) {
+		t.Fatalf("writes %v; Close must save %s", w, hsvDP(col))
+	}
+}
+
+func TestRefreshReportsTheShownColour(t *testing.T) {
+	s := &recSession{}
+	c := recControl(s)
+	defer c.Close()
+	c.Live(dp.HSV{H: 180, S: 500, V: 250}, dp.ChangeJump)
+	st, err := c.Refresh(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Hue != 0.5 || st.Sat != 0.5 || st.BrightPct != 25 {
+		t.Fatalf("status %+v; want the live colour, not the saved one", st)
 	}
 }

@@ -1,14 +1,14 @@
 package screensync
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/dp"
+
+	"github.com/alex-bluetrain/notuya-gui/internal/colour"
 )
 
 // noUdmabuf stops glupload picking its udmabuf path for system-memory
@@ -36,83 +36,24 @@ func halves(left, right uint32) Source {
 	}
 }
 
-// fakeLight records what the engine sends and can drop its stream on demand.
+// fakeLight records what the engine sends.
 type fakeLight struct {
-	mu        sync.Mutex
-	seed      dp.RGB
-	failBegin int // BeginLive calls left that fail
-	begins    int
-	ends      int
-	owner     any
-	last      dp.RGB
-	updates   int
-	dead      chan struct{}
+	mu      sync.Mutex
+	last    dp.HSV
+	updates int
 }
 
-func (f *fakeLight) Seed(context.Context) dp.RGB { return f.seed }
-
-func (f *fakeLight) BeginLive(owner any, seed dp.RGB, _ dp.ChangeMode) error {
+func (f *fakeLight) Live(c dp.HSV, _ dp.ChangeMode) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.begins++
-	if f.failBegin > 0 {
-		f.failBegin--
-		return errors.New("refused")
-	}
-	if f.dead != nil {
-		return nil // same owner re-begin is a no-op
-	}
-	f.owner, f.last, f.dead = owner, seed, make(chan struct{})
-	return nil
+	f.last = c
+	f.updates++
 }
 
-func (f *fakeLight) UpdateLive(owner any, rgb dp.RGB) {
+func (f *fakeLight) snapshot() (last dp.HSV, updates int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.dead != nil && owner == f.owner {
-		f.last = rgb
-		f.updates++
-	}
-}
-
-func (f *fakeLight) EndLive(owner any) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.dead != nil && owner == f.owner {
-		f.dead, f.owner = nil, nil
-		f.ends++
-	}
-}
-
-func (f *fakeLight) Streaming() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.dead != nil
-}
-
-func (f *fakeLight) Dead() <-chan struct{} {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.dead == nil {
-		return nil
-	}
-	return f.dead
-}
-
-// drop simulates the bulb closing its live stream.
-func (f *fakeLight) drop() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.dead != nil {
-		close(f.dead)
-		f.dead = nil
-	}
-}
-
-func (f *fakeLight) snapshot() (last dp.RGB, begins, updates int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.last, f.begins, f.updates
+	return f.last, f.updates
 }
 
 func eventually(t *testing.T, what string, cond func() bool) {
@@ -126,7 +67,8 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-func near(a, b dp.RGB) bool {
+func near(c dp.HSV, b colour.RGB) bool {
+	a := colour.ToRGB(c)
 	d := func(x, y uint8) bool { return int(x)-int(y) <= 2 && int(y)-int(x) <= 2 }
 	return d(a.R, b.R) && d(a.G, b.G) && d(a.B, b.B)
 }
@@ -144,7 +86,7 @@ func startEngine(t *testing.T, opts Options) *Engine {
 func TestRegionsGetTheirOwnColour(t *testing.T) {
 	left, right := &fakeLight{}, &fakeLight{}
 	var mu sync.Mutex
-	var got []dp.RGB
+	var got []dp.HSV
 	startEngine(t, Options{
 		Sources:    []Source{halves(0xff0000, 0x0000ff)},
 		Brightness: 1,
@@ -152,12 +94,12 @@ func TestRegionsGetTheirOwnColour(t *testing.T) {
 			{Rect: Rect{0.05, 0.1, 0.4, 0.8}, Lights: []LightSink{left}},
 			{Rect: Rect{0.55, 0.1, 0.4, 0.8}, Lights: []LightSink{right}},
 		},
-		OnFrame: func(c []dp.RGB) { mu.Lock(); got = c; mu.Unlock() },
+		OnFrame: func(c []dp.HSV) { mu.Lock(); got = c; mu.Unlock() },
 	})
-	red, blue := dp.RGB{R: 255}, dp.RGB{B: 255}
+	red, blue := colour.RGB{R: 255}, colour.RGB{B: 255}
 	eventually(t, "region colours", func() bool {
-		l, _, _ := left.snapshot()
-		r, _, _ := right.snapshot()
+		l, _ := left.snapshot()
+		r, _ := right.snapshot()
 		return near(l, red) && near(r, blue)
 	})
 	mu.Lock()
@@ -178,8 +120,8 @@ func TestRegionSpanningSourcesIsAreaWeighted(t *testing.T) {
 		// 3/4 of the region on the red source, 1/4 on the blue one.
 		Regions: []Region{{Rect: Rect{0.2, 0, 0.4, 1}, Lights: []LightSink{l}}},
 	})
-	want := dp.RGB{R: 191, B: 64}
-	eventually(t, "weighted colour", func() bool { c, _, _ := l.snapshot(); return near(c, want) })
+	want := colour.RGB{R: 191, B: 64}
+	eventually(t, "weighted colour", func() bool { c, _ := l.snapshot(); return near(c, want) })
 }
 
 func TestBrightnessScalesAndClamps(t *testing.T) {
@@ -189,27 +131,30 @@ func TestBrightnessScalesAndClamps(t *testing.T) {
 		Brightness: 0.5,
 		Regions:    []Region{{Rect: Rect{0, 0, 1, 1}, Lights: []LightSink{l}}},
 	})
-	eventually(t, "half brightness", func() bool { c, _, _ := l.snapshot(); return near(c, dp.RGB{R: 64, G: 32, B: 16}) })
+	eventually(t, "half brightness", func() bool { c, _ := l.snapshot(); return near(c, colour.RGB{R: 64, G: 32, B: 16}) })
 	e.SetBrightness(4)
-	eventually(t, "clamped boost", func() bool { c, _, _ := l.snapshot(); return near(c, dp.RGB{R: 255, G: 255, B: 128}) })
+	eventually(t, "clamped boost", func() bool { c, _ := l.snapshot(); return near(c, colour.RGB{R: 255, G: 255, B: 128}) })
 }
 
-func TestUnboundLightIsReleased(t *testing.T) {
+func TestUnboundLightStopsGettingFrames(t *testing.T) {
 	a, b := &fakeLight{}, &fakeLight{}
 	e := startEngine(t, Options{
 		Sources:    []Source{solid(0x00ff00, Rect{0, 0, 1, 1})},
 		Brightness: 1,
 		Regions:    []Region{{Rect: Rect{0, 0, 1, 1}, Lights: []LightSink{a, b}}},
 	})
-	eventually(t, "both streaming", func() bool { return a.Streaming() && b.Streaming() })
+	eventually(t, "both fed", func() bool { _, na := a.snapshot(); _, nb := b.snapshot(); return na > 0 && nb > 0 })
 	e.SetRegions([]Region{{Rect: Rect{0, 0, 1, 1}, Lights: []LightSink{a}}})
-	eventually(t, "b released", func() bool { return !b.Streaming() })
-	if !a.Streaming() {
-		t.Fatal("a stopped streaming")
+	time.Sleep(100 * time.Millisecond) // let an in-flight frame land
+	_, nb := b.snapshot()
+	_, na := a.snapshot()
+	eventually(t, "a still fed", func() bool { _, n := a.snapshot(); return n > na })
+	if _, n := b.snapshot(); n != nb {
+		t.Fatalf("unbound light got %d more frames", n-nb)
 	}
 }
 
-func TestStopReleasesLightsKeepingLastColour(t *testing.T) {
+func TestStopLeavesLastColour(t *testing.T) {
 	l := &fakeLight{}
 	e, err := Start(Options{
 		Sources:    []Source{solid(0x112233, Rect{0, 0, 1, 1})},
@@ -219,44 +164,17 @@ func TestStopReleasesLightsKeepingLastColour(t *testing.T) {
 	if err != nil {
 		t.Skipf("GStreamer GL unavailable: %v", err)
 	}
-	want := dp.RGB{R: 0x11, G: 0x22, B: 0x33}
-	eventually(t, "colour", func() bool { c, _, _ := l.snapshot(); return near(c, want) })
+	want := colour.RGB{R: 0x11, G: 0x22, B: 0x33}
+	eventually(t, "colour", func() bool { c, _ := l.snapshot(); return near(c, want) })
 	e.Stop()
-	if l.Streaming() {
-		t.Fatal("still streaming after Stop")
+	_, n := l.snapshot()
+	time.Sleep(100 * time.Millisecond)
+	c, n2 := l.snapshot()
+	if n2 != n {
+		t.Fatalf("%d frames after Stop", n2-n)
 	}
-	if c, _, _ := l.snapshot(); !near(c, want) {
+	if !near(c, want) {
 		t.Fatalf("last colour %v, want %v", c, want)
-	}
-}
-
-func TestDroppedLightReconnectsWithBackoff(t *testing.T) {
-	l := &fakeLight{}
-	var mu sync.Mutex
-	var trouble []bool
-	startEngine(t, Options{
-		Sources:        []Source{solid(0xffffff, Rect{0, 0, 1, 1})},
-		Brightness:     1,
-		Regions:        []Region{{Rect: Rect{0, 0, 1, 1}, Lights: []LightSink{l}}},
-		OnLightTrouble: func(_ LightSink, ok bool) { mu.Lock(); trouble = append(trouble, ok); mu.Unlock() },
-		reconnect:      reconnect{20 * time.Millisecond, 80 * time.Millisecond, 100 * time.Millisecond},
-	})
-	eventually(t, "streaming", l.Streaming)
-
-	l.mu.Lock()
-	l.failBegin = 3
-	l.mu.Unlock()
-	l.drop()
-	eventually(t, "reconnect", func() bool { _, b, _ := l.snapshot(); return b >= 5 && l.Streaming() })
-	eventually(t, "recovery reported", func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(trouble) == 2
-	})
-	mu.Lock()
-	defer mu.Unlock()
-	if trouble[0] || !trouble[1] {
-		t.Fatalf("trouble events %v, want [false true]", trouble)
 	}
 }
 
@@ -269,8 +187,8 @@ func TestBadSourceFailsWithoutTouchingLights(t *testing.T) {
 	if err == nil {
 		t.Fatal("Start succeeded with a broken source")
 	}
-	if _, b, _ := l.snapshot(); b != 0 {
-		t.Fatalf("light touched %d times", b)
+	if _, n := l.snapshot(); n != 0 {
+		t.Fatalf("light touched %d times", n)
 	}
 }
 
@@ -295,9 +213,6 @@ func TestSourceEndStopsSync(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("sync did not stop when its source ended")
-	}
-	if l.Streaming() {
-		t.Fatal("light still streaming after source ended")
 	}
 }
 

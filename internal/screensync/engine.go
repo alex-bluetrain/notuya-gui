@@ -7,21 +7,16 @@ import (
 	"time"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/dp"
+
+	"github.com/alex-bluetrain/notuya-gui/internal/colour"
 )
 
 // LightSink is one bulb as the engine sees it. The app implements it with
 // its shared per-device control, so sync never opens a session of its own.
 type LightSink interface {
-	// Seed returns the bulb's current colour. It is called before
-	// BeginLive because the bulb refuses status queries once streaming.
-	Seed(ctx context.Context) dp.RGB
-	BeginLive(owner any, seed dp.RGB, mode dp.ChangeMode) error
-	UpdateLive(owner any, rgb dp.RGB)
-	// EndLive blocks; the engine only calls it off the GTK thread.
-	EndLive(owner any)
-	Streaming() bool
-	// Dead fires if the live stream drops; nil while not streaming.
-	Dead() <-chan struct{}
+	// Live hands the bulb a frame's colour. It must not block: the bulb's
+	// own writer sends it on DP 28; it stays unsaved (Stop does not save it).
+	Live(c dp.HSV, mode dp.ChangeMode)
 }
 
 // Region is a canvas rectangle and the lights that follow its colour.
@@ -37,34 +32,16 @@ type Options struct {
 	Brightness float64 // multiplier, 1 = unchanged
 	// OnFrame receives each region's colour (after brightness). It runs on
 	// an engine goroutine; hop to the GTK thread before touching widgets.
-	OnFrame func([]dp.RGB)
+	OnFrame func([]dp.HSV)
 	// OnStop runs once if the engine stops by itself (source gone or
 	// broken), with the reason. It is not called after Stop.
 	OnStop func(error)
-	// OnLightTrouble runs when a light has failed to reconnect 3 times in
-	// a row, and again with ok=true once it recovers.
-	OnLightTrouble func(l LightSink, ok bool)
-
-	reconnect reconnect // zero = defaults; tests shorten it
 }
 
 const (
 	frameTimeout   = 250 * time.Millisecond
-	troubleAfter   = 3
-	seedTimeout    = 3 * time.Second
 	liveChangeMode = dp.ChangeJump
 )
-
-// Reconnect timing defaults.
-const (
-	defaultBackoffStart = time.Second
-	defaultBackoffMax   = 30 * time.Second
-	defaultHealthyAfter = 5 * time.Second
-)
-
-// reconnect is how a dropped light is retried: wait start, doubling up to
-// max; a stream that stays up for healthy resets the count.
-type reconnect struct{ start, max, healthy time.Duration }
 
 // Engine runs one sync: GPU streams in, bulb colours out.
 type Engine struct {
@@ -79,7 +56,6 @@ type Engine struct {
 	bindings   [][]LightSink
 	brightness float64
 	rows       [][]byte // latest row per stream (nil until its first frame)
-	lights     map[LightSink]*lightRunner
 	stopped    bool
 }
 
@@ -93,9 +69,6 @@ func Start(opts Options) (*Engine, error) {
 	if len(opts.Regions) > MaxRegions {
 		return nil, errors.New("screensync: too many regions")
 	}
-	if opts.reconnect == (reconnect{}) {
-		opts.reconnect = reconnect{defaultBackoffStart, defaultBackoffMax, defaultHealthyAfter}
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
 		opts:       opts,
@@ -103,7 +76,6 @@ func Start(opts Options) (*Engine, error) {
 		cancel:     cancel,
 		brightness: opts.Brightness,
 		rows:       make([][]byte, len(opts.Sources)),
-		lights:     map[LightSink]*lightRunner{},
 	}
 	for _, src := range opts.Sources {
 		s, err := openStream(src)
@@ -128,19 +100,15 @@ func Start(opts Options) (*Engine, error) {
 	return e, nil
 }
 
-// SetRegions swaps regions and bindings live (used while editing). Lights
-// no longer bound are released; new ones start streaming.
+// SetRegions swaps regions and bindings live (used while editing). A light
+// no longer bound keeps its last colour.
 func (e *Engine) SetRegions(regions []Region) {
 	regions = regions[:min(len(regions), MaxRegions)]
 	rects := make([]Rect, len(regions))
 	bindings := make([][]LightSink, len(regions))
-	want := map[LightSink]bool{}
 	for i, r := range regions {
 		rects[i] = r.Rect
 		bindings[i] = r.Lights
-		for _, l := range r.Lights {
-			want[l] = true
-		}
 	}
 
 	e.mu.Lock()
@@ -149,28 +117,10 @@ func (e *Engine) SetRegions(regions []Region) {
 		return
 	}
 	e.rects, e.bindings = rects, bindings
-	var gone []*lightRunner
-	for l, lr := range e.lights {
-		if !want[l] {
-			gone = append(gone, lr)
-			delete(e.lights, l)
-		}
-	}
-	for l := range want {
-		if e.lights[l] == nil {
-			lr := &lightRunner{e: e, l: l, done: make(chan struct{})}
-			e.lights[l] = lr
-			e.wg.Add(1)
-			go lr.run()
-		}
-	}
 	e.mu.Unlock()
 
 	for _, s := range e.streams {
 		s.setRegions(rects)
-	}
-	for _, lr := range gone {
-		lr.release()
 	}
 }
 
@@ -181,8 +131,8 @@ func (e *Engine) SetBrightness(f float64) {
 	e.mu.Unlock()
 }
 
-// Stop ends the sync. Lights keep their last colour. It blocks while each
-// light persists its final colour: never call it on the GTK thread.
+// Stop ends the sync. Lights keep showing their last colour. It blocks until the capture pipelines are down: never call it on
+// the GTK thread.
 func (e *Engine) Stop() {
 	e.shutdown()
 	e.wg.Wait()
@@ -238,7 +188,7 @@ func (e *Engine) frame(i int, row []byte) {
 		e.rows[i] = make([]byte, len(row))
 	}
 	copy(e.rows[i], row)
-	colours := make([]dp.RGB, len(e.rects))
+	colours := make([]dp.HSV, len(e.rects))
 	for r := range e.rects {
 		var sum [3]float64
 		var total float64
@@ -253,121 +203,28 @@ func (e *Engine) frame(i int, row []byte) {
 			total += w
 		}
 		if total > 0 {
-			colours[r] = dp.RGB{
-				R: scale(sum[0]/total, e.brightness),
-				G: scale(sum[1]/total, e.brightness),
-				B: scale(sum[2]/total, e.brightness),
-			}
+			// Stay in floats down to the bulb's 0–1000 scale: the mean
+			// of many pixels is finer than one 8-bit step.
+			f := e.brightness / (255 * total)
+			colours[r] = colour.FromRGB(sum[0]*f, sum[1]*f, sum[2]*f)
 		}
 	}
 	type send struct {
-		lr  *lightRunner
-		rgb dp.RGB
+		l LightSink
+		c dp.HSV
 	}
 	var sends []send
 	for r, ls := range e.bindings {
 		for _, l := range ls {
-			if lr := e.lights[l]; lr != nil {
-				sends = append(sends, send{lr, colours[r]})
-			}
+			sends = append(sends, send{l, colours[r]})
 		}
 	}
 	e.mu.Unlock()
 
 	for _, s := range sends {
-		s.lr.update(s.rgb)
+		s.l.Live(s.c, liveChangeMode)
 	}
 	if e.opts.OnFrame != nil {
 		e.opts.OnFrame(colours)
-	}
-}
-
-func scale(v, f float64) uint8 {
-	return uint8(min(max(v*f+0.5, 0), 255))
-}
-
-// lightRunner keeps one light streaming for the whole sync, reconnecting
-// with backoff when its live stream drops.
-type lightRunner struct {
-	e    *Engine
-	l    LightSink
-	done chan struct{} // closed when the light is unbound
-
-	mu   sync.Mutex
-	last dp.RGB
-	have bool
-}
-
-func (lr *lightRunner) update(rgb dp.RGB) {
-	lr.mu.Lock()
-	lr.last, lr.have = rgb, true
-	lr.mu.Unlock()
-	lr.l.UpdateLive(lr.e, rgb)
-}
-
-func (lr *lightRunner) release() { close(lr.done) }
-
-func (lr *lightRunner) run() {
-	defer lr.e.wg.Done()
-	defer lr.l.EndLive(lr.e)
-
-	sctx, cancel := context.WithTimeout(lr.e.ctx, seedTimeout)
-	seed := lr.l.Seed(sctx)
-	cancel()
-	lr.mu.Lock()
-	if !lr.have {
-		lr.last = seed
-	}
-	lr.mu.Unlock()
-
-	rc := lr.e.opts.reconnect
-	backoff := rc.start
-	failures := 0
-	for {
-		lr.mu.Lock()
-		colour := lr.last
-		lr.mu.Unlock()
-		err := lr.l.BeginLive(lr.e, colour, liveChangeMode)
-		var dead <-chan struct{}
-		if err == nil {
-			dead = lr.l.Dead()
-		}
-		if dead != nil {
-			// The session dials asynchronously, so BeginLive succeeding
-			// proves nothing: only a stream that stays up counts as healthy.
-			healthy := time.NewTimer(rc.healthy)
-		alive:
-			for {
-				select {
-				case <-healthy.C:
-					if failures >= troubleAfter && lr.e.opts.OnLightTrouble != nil {
-						lr.e.opts.OnLightTrouble(lr.l, true)
-					}
-					failures, backoff = 0, rc.start
-				case <-dead:
-					healthy.Stop()
-					break alive
-				case <-lr.done:
-					healthy.Stop()
-					return
-				case <-lr.e.ctx.Done():
-					healthy.Stop()
-					return
-				}
-			}
-			lr.l.EndLive(lr.e)
-		}
-		failures++
-		if failures == troubleAfter && lr.e.opts.OnLightTrouble != nil {
-			lr.e.opts.OnLightTrouble(lr.l, false)
-		}
-		select {
-		case <-time.After(backoff):
-		case <-lr.done:
-			return
-		case <-lr.e.ctx.Done():
-			return
-		}
-		backoff = min(backoff*2, rc.max)
 	}
 }

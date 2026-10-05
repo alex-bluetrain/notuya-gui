@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/dp"
+
+	"github.com/alex-bluetrain/notuya-gui/internal/colour"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/cairo"
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"
@@ -73,9 +75,9 @@ type colourCallbacks struct {
 	// already updated by the component).
 	OnMode func(isWhite bool)
 	// OnDragBegin/Update/End bracket a wheel drag with the current RGB.
-	OnDragBegin  func(rgb dp.RGB)
-	OnDragUpdate func(rgb dp.RGB)
-	OnDragEnd    func(rgb dp.RGB)
+	OnDragBegin  func(c dp.HSV)
+	OnDragUpdate func(c dp.HSV)
+	OnDragEnd    func(c dp.HSV)
 	// OnBright / OnTemp fire on slider moves with the new 0-100 value.
 	OnBright func(v float64)
 	OnTemp   func(v float64)
@@ -140,19 +142,19 @@ func newColourControls(surface *cairo.Surface, size int, cb colourCallbacks) *co
 		startX, startY = x, y
 		cc.setSelection(x, y)
 		if cc.cb.OnDragBegin != nil {
-			cc.cb.OnDragBegin(cc.SelRGB())
+			cc.cb.OnDragBegin(cc.Sel())
 		}
 	})
 	drag.ConnectDragUpdate(func(ox, oy float64) {
 		cc.setSelection(startX+ox, startY+oy)
 		if cc.cb.OnDragUpdate != nil {
-			cc.cb.OnDragUpdate(cc.SelRGB())
+			cc.cb.OnDragUpdate(cc.Sel())
 		}
 	})
 	drag.ConnectDragEnd(func(ox, oy float64) {
 		cc.setSelection(startX+ox, startY+oy)
 		if cc.cb.OnDragEnd != nil {
-			cc.cb.OnDragEnd(cc.SelRGB())
+			cc.cb.OnDragEnd(cc.Sel())
 		}
 	})
 	cc.Wheel.AddController(drag)
@@ -183,18 +185,20 @@ func newColourControls(surface *cairo.Surface, size int, cb colourCallbacks) *co
 	brightIcon := gtk.NewImageFromIconName("display-brightness-symbolic")
 	brightIcon.AddCSSClass("dim-label")
 	cc.BrightRow.Append(brightIcon)
-	cc.Bright = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 1, 100, 1)
+	// 0–100 % in 0.1 steps: colour brightness is DP 24/28's V, 0–1000. White
+	// mode's DP 22 bottoms out at 1 %, and notuya-go clamps lower values up.
+	cc.Bright = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 0, 100, 0.1)
 	cc.Bright.SetHExpand(true)
 	cc.Bright.SetDrawValue(false)
-	cc.Bright.SetRoundDigits(0)
+	cc.Bright.SetRoundDigits(1)
 	disableScaleScroll(cc.Bright)
 	cc.brightPct = gtk.NewLabel("100%")
-	cc.brightPct.SetWidthChars(4)
+	cc.brightPct.SetWidthChars(5)
 	cc.brightPct.SetXAlign(1.0)
 	cc.brightPct.AddCSSClass("dim-label")
 	cc.Bright.ConnectValueChanged(func() {
 		v := cc.Bright.Value()
-		cc.brightPct.SetText(fmt.Sprintf("%d%%", int(v)))
+		cc.brightPct.SetText(pctText(v))
 		if cc.cb.OnBright != nil {
 			cc.cb.OnBright(v)
 		}
@@ -242,21 +246,25 @@ func (cc *colourControls) SetHS(h, s float64) {
 	cc.Wheel.QueueDraw()
 }
 
-// SelRGB is the current wheel selection at full value. Brightness is a
-// separate control and is deliberately not mixed in.
-func (cc *colourControls) SelRGB() dp.RGB {
-	return hsvRGB(cc.hue, cc.sat, 1.0)
+// Sel is the current wheel selection at the Brightness slider's value, so
+// picking a colour never changes how bright the light is.
+func (cc *colourControls) Sel() dp.HSV {
+	return colour.HSV(cc.hue, cc.sat, cc.Bright.Value()/100)
 }
 
-// hsvRGB converts the GUI's hue/sat/value (each 0-1) to RGB through the
-// bulb's own colour model, rounding to the whole degrees and per-mille steps
-// the bulb stores.
-func hsvRGB(h, s, v float64) dp.RGB {
-	return dp.HSV{
-		H: int(math.Round(h * 360)),
-		S: int(math.Round(s * 1000)),
-		V: int(math.Round(v * 1000)),
-	}.RGB()
+// pctText formats a brightness percentage, keeping the tenth below 10 %
+// where it is a visible step.
+func pctText(v float64) string {
+	if v < 10 && v != math.Round(v) {
+		return fmt.Sprintf("%.1f%%", v)
+	}
+	return fmt.Sprintf("%d%%", int(math.Round(v)))
+}
+
+// hsvRGB converts the GUI's hue/sat/value (each 0-1) to RGB for painting.
+// Bulbs are driven with colour.HSV instead, which keeps the full range.
+func hsvRGB(h, s, v float64) colour.RGB {
+	return colour.ToRGB(colour.HSV(h, s, v))
 }
 
 // setSelection updates hue/sat from wheel coordinates (compensating for the

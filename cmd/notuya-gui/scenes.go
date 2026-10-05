@@ -1,9 +1,9 @@
 package main
 
 import (
-	"context"
-
 	"github.com/alex-bluetrain/notuya-go/pkg/dp"
+
+	"github.com/alex-bluetrain/notuya-gui/internal/colour"
 )
 
 // stateFromStatus maps a refreshed deviceStatus to a SceneState. An off light
@@ -171,10 +171,10 @@ overlay:hover .scene-tile-action {
 // two-stop gradient. The rule is scoped to the given unique class so tiles do
 // not bleed into one another. An empty scene yields no rule.
 func sceneGradientCSS(class string, sc Scene) string {
-	var cs []dp.RGB
+	var cs []colour.RGB
 	for _, st := range sc.States {
 		r, g, b := sceneStateColour(st)
-		cs = append(cs, dp.RGB{R: r, G: g, B: b})
+		cs = append(cs, colour.RGB{R: r, G: g, B: b})
 	}
 	if len(cs) == 0 {
 		return ""
@@ -182,16 +182,16 @@ func sceneGradientCSS(class string, sc Scene) string {
 	return tileGradientCSS(class, cs)
 }
 
-// applyScene fans a scene out to the lights it names, one goroutine per state,
-// off the GTK thread. Stale device_ids (no matching control) and lights a
-// live stream owns (Screen Sync) are skipped; applying is best-effort, so a
-// per-device failure is logged, not fatal.
-func applyScene(scene Scene, byID map[string]*control) {
+// applyScene queues a scene on each light it names; each control's writer
+// sends it in order. Stale device_ids (no matching control) and lights Screen
+// Sync drives are skipped; applying is best-effort, so a per-device failure
+// is logged, not fatal.
+func applyScene(scene Scene, byID map[string]*control, synced map[string]bool) {
 	for _, st := range scene.States {
 		ctl, ok := byID[st.DeviceID]
-		if !ok || ctl.Streaming() {
+		if !ok || synced[st.DeviceID] {
 			continue
 		}
-		ctl.async("apply scene", func(ctx context.Context) error { return ctl.ApplyState(ctx, st) })
+		ctl.Apply(st)
 	}
 }

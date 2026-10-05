@@ -1,10 +1,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/cairo"
@@ -39,6 +39,11 @@ type desktopApp struct {
 	// lights the running sync drives.
 	sync       *syncTab
 	onSyncLock func(synced map[string]bool)
+	// synced are the lights the running Screen Sync drives; scenes and
+	// Settings' Test leave them alone.
+	synced map[string]bool
+	// saveLights saves the Lights tab's live colours; set by that tab.
+	saveLights func()
 
 	// scenesFlow + scenesStatus back the Scenes tab; the tile grid is rebuilt
 	// on every change.
@@ -114,6 +119,14 @@ func (a *desktopApp) activate() {
 	stack.AddTitledWithIcon(a.buildScreenSyncTab(), "sync", "Screen Sync", "video-display-symbolic")
 	stack.AddTitledWithIcon(a.buildSettingsTab(), "settings", "Settings", "emblem-system-symbolic")
 	stack.SetVisibleChildName("scenes")
+	// Leaving the Lights tab saves the colours its controls showed live.
+	shown := stack.VisibleChildName()
+	stack.NotifyProperty("visible-child-name", func() {
+		if shown == "lights" && a.saveLights != nil {
+			a.saveLights()
+		}
+		shown = stack.VisibleChildName()
+	})
 
 	switcher := adw.NewViewSwitcher()
 	switcher.SetPolicy(adw.ViewSwitcherPolicyWide)
@@ -499,6 +512,7 @@ func (a *desktopApp) buildSettingsTab() gtk.Widgetter {
 		a.configPath,
 		a.cfg.Devices,
 		func(id string) *control { return a.byID[id] },
+		func(id string) bool { return a.synced[id] },
 		func() []Scene { return a.cfg.Scenes },
 		func() []Room { return a.cfg.Rooms },
 		func(devices []Device) {
@@ -517,8 +531,7 @@ func (a *desktopApp) buildSettingsTab() gtk.Widgetter {
 // groupPower toggles every member panel's device off the GTK thread.
 func (a *desktopApp) groupPower(members []*devicePanel, on bool) {
 	for _, p := range members {
-		ctl := p.ctl
-		ctl.async("power", func(ctx context.Context) error { return ctl.SetPower(ctx, on) })
+		p.ctl.Power(on)
 	}
 }
 
@@ -671,7 +684,7 @@ func (a *desktopApp) applySceneAt(i int) {
 	}
 	sc := a.cfg.Scenes[i]
 	a.scenesStatus.SetLabel("Applying “" + sc.Name + "”…")
-	applyScene(sc, a.byID)
+	applyScene(sc, a.byID, a.synced)
 }
 
 // deleteSceneAt asks for confirmation before removing the scene at index i.
@@ -719,7 +732,13 @@ func (a *desktopApp) saveCfg() error {
 // with no matching Hold(), the app exits when its last window closes, and an
 // extra Release() would underflow the use count (GLib assertion).
 func (a *desktopApp) closeControls() {
+	var wg sync.WaitGroup
 	for _, ctl := range a.controls {
-		ctl.Close()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctl.Close()
+		}()
 	}
+	wg.Wait()
 }

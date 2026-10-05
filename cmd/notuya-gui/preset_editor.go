@@ -11,6 +11,8 @@ import (
 	coreglib "github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 	"github.com/diamondburned/gotk4/pkg/pango"
+
+	"github.com/alex-bluetrain/notuya-gui/internal/colour"
 )
 
 // newPreset is the editor index of a preset that isn't in the list yet.
@@ -288,7 +290,8 @@ func (e *presetEditor) regionCard(ri int) gtk.Widgetter {
 	sw.da.SetDrawFunc(func(_ *gtk.DrawingArea, cr *cairo.Context, w, h int) {
 		roundedRect(cr, 0, 0, float64(w), float64(h), 7)
 		if sw.set {
-			cr.SetSourceRGB(float64(sw.rgb.R)/255, float64(sw.rgb.G)/255, float64(sw.rgb.B)/255)
+			rgb := colour.ToRGB(sw.c)
+			cr.SetSourceRGB(float64(rgb.R)/255, float64(rgb.G)/255, float64(rgb.B)/255)
 		} else {
 			cr.SetSourceRGBA(0.5, 0.5, 0.5, 0.25)
 		}

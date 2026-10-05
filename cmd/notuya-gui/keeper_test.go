@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alex-bluetrain/notuya-go/pkg/dp"
 	"github.com/alex-bluetrain/notuya-go/pkg/session"
 )
 
@@ -89,30 +88,6 @@ func TestKeeperRedialsAndRepublishesAfterLinkLoss(t *testing.T) {
 	}
 }
 
-func TestKeeperIdlesWhileStreamingAndRereadsAfter(t *testing.T) {
-	c := liveControl(&liveSession{})
-	got := make(chan deviceStatus, 4)
-	c.Subscribe(func(st deviceStatus) { got <- st })
-
-	owner := new(int)
-	if err := c.BeginLive(owner, dp.RGB{}, dp.ChangeJump); err != nil {
-		t.Fatal(err)
-	}
-	c.Start()
-	defer c.Close()
-	select {
-	case <-got:
-		t.Fatal("keeper must not query a bulb a live stream owns")
-	case <-time.After(200 * time.Millisecond):
-	}
-	c.EndLive(owner)
-	select {
-	case <-got:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no status re-read after the stream ended")
-	}
-}
-
 // Settings' Test re-keys a device while its keeper runs and the GTK thread
 // reads the device's name for banners and its ID for Screen Sync's lockout.
 func TestReconfigureWhileKeeperRunsIsRaceFree(t *testing.T) {
@@ -152,9 +127,9 @@ type rejectSession struct{ *linkSession }
 
 func (rejectSession) Control(context.Context, []byte, bool) error { return errors.New("rejected") }
 
-// A failed async command leaves the optimistic UI wrong, so the keeper must
+// A failed queued command leaves the optimistic UI wrong, so the keeper must
 // re-read and republish the bulb's real state without redialling.
-func TestFailedAsyncCommandRepublishesStatus(t *testing.T) {
+func TestFailedCommandRepublishesStatus(t *testing.T) {
 	c := newControl(Device{DeviceID: "dev1", IPAddress: "127.0.0.1", LocalKey: "0123456789abcdef"})
 	var dials atomic.Int32
 	c.dial = func(context.Context, string, []byte) (session.Session, error) {
@@ -175,7 +150,7 @@ func TestFailedAsyncCommandRepublishesStatus(t *testing.T) {
 		}
 	}
 	wait("on connect")
-	c.async("power", func(ctx context.Context) error { return c.SetPower(ctx, false) })
+	c.Power(false)
 	wait("after the command failed")
 	if n := dials.Load(); n != 1 {
 		t.Fatalf("dials = %d, want 1 (a rejected command keeps the link)", n)

@@ -27,9 +27,10 @@ Everything is under `cmd/notuya-gui/` (plus `internal/screensync/`):
 - `lights_tab.go` / `colour_controls.go` — Lights tab + shared colour widget
 - `device_panel.go` — per-device cached state for the Rooms summary (the
   Rooms tab is hidden for now: `roomsTabEnabled = false` in `app.go`)
-- `control.go` — per-device session, commands, live-stream ownership
+- `control.go` — per-device session and command API (`Live`, `Save`, `Power`, `Apply`, …)
+- `writer.go` — per-device sender: live-colour slot + ordered command list
 - `keeper.go` — per-device link keeper: holds the session, probes, redials
-- `stream.go` — live colour streamer (DP 28) for drags and Screen Sync
+- `wire.go` — records what was sent, for the "Sent to bulbs" panel
 - `scenes.go` / `scene_editor.go` — scenes
 - `screen_sync_tab.go` / `sync_overlay.go` — Screen Sync tab + region overlay
 - `wizard.go` — first-run window AND the embedded Settings tab
@@ -52,10 +53,14 @@ Everything is under `cmd/notuya-gui/` (plus `internal/screensync/`):
 - Tabs **listen, never poll**: Lights rows (and Rooms panels) `Subscribe` to
   the status the keeper publishes on every (re)connect and after a failed
   command.
-- Commands may run concurrently over the session; `c.mu` guards only the
-  control's fields and the dial. Live colour drags and Screen Sync borrow
-  the bulb via the streamer (DP 28), which closes the command session; the
-  keeper idles meanwhile and redials when the stream ends.
+- **One writer per bulb.** Every write goes through the control's sender
+  over the one session. `Live(c, mode)` overwrites a slot and never blocks;
+  the sender sends it on DP 28 (preview, unacked, newest wins). Commands
+  (`Power`, `Apply`, white mode, `Save`, status reads) run in the order
+  asked, after any colour asked before them. DP 28 is not saved: `Save`
+  writes the last shown colour to DP 24 — on leaving the Lights tab, the
+  scene editor's Save, and app quit. Until saved, `Refresh` reports the
+  shown colour. `write_order_test.go` is the acceptance harness.
 - The GUI holds each bulb's **only** local connection. Another local client
   (tinytuya, the Tuya app on LAN) knocks the GUI off and vice versa — they
   fight in a reconnect loop. Close the GUI before using other tools.
@@ -67,8 +72,8 @@ Everything is under `cmd/notuya-gui/` (plus `internal/screensync/`):
 ## Boundaries
 
 1. **Copy the existing pattern.** Drive bulbs through the per-device `control`
-   (`ctl.async(...)` + `SetColour`/`SetPower`), as `lights_tab.go` does. No
-   throwaway sessions or one-off streams.
+   (`ctl.Live`/`Save` for colour, `Power`/`Apply`/… for commands), as
+   `lights_tab.go` does. No throwaway sessions or second writers.
 2. **Prefer native `Adw*` widgets** over hand-built `gtk.Box` + CSS. Ask for a
    reference rather than guessing at cosmetics.
 3. **Never touch the user's real config** (`~/.config/notuya-gui`,

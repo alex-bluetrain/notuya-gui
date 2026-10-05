@@ -1,10 +1,10 @@
 package main
 
 import (
-	"context"
 	"math"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/dp"
+
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
@@ -217,19 +217,9 @@ func (e *sceneEditor) newDeviceRow(dev Device) *sceneDeviceRow {
 			}
 			r.onModeChanged()
 		},
-		OnDragBegin: func(rgb dp.RGB) {
-			r.syncHS()
-			r.ctl.BeginLive(r, rgb, dp.DefaultChangeMode)
-		},
-		OnDragUpdate: func(rgb dp.RGB) {
-			r.syncHS()
-			r.ctl.UpdateLive(r, rgb)
-		},
-		OnDragEnd: func(rgb dp.RGB) {
-			r.syncHS()
-			r.ctl.UpdateLive(r, rgb)
-			go r.ctl.EndLive(r)
-		},
+		OnDragBegin:  func(dp.HSV) { r.syncHS(); r.previewColour() },
+		OnDragUpdate: func(dp.HSV) { r.syncHS(); r.previewColour() },
+		OnDragEnd:    func(dp.HSV) { r.syncHS(); r.previewColour() },
 		OnBright: func(v float64) {
 			if r.suppress {
 				return
@@ -275,11 +265,7 @@ func (r *sceneDeviceRow) prefill(include bool, st SceneState) {
 		}
 	}
 
-	bright := st.Bright
-	if bright < 1 {
-		bright = 1
-	}
-	r.cc.Bright.SetValue(math.Round(bright))
+	r.cc.Bright.SetValue(st.Bright)
 	r.cc.Temp.SetValue(math.Round(st.Temp))
 	r.cc.SetHS(st.Hue, st.Sat)
 }
@@ -313,33 +299,24 @@ func (r *sceneDeviceRow) applySensitivity() {
 
 // --- live preview helpers (all off the GTK thread via the control) ---
 
-func (r *sceneDeviceRow) previewPower(on bool) {
-	ctl := r.ctl
-	ctl.async("power", func(ctx context.Context) error { return ctl.SetPower(ctx, on) })
-}
+func (r *sceneDeviceRow) previewPower(on bool) { r.ctl.Power(on) }
 
+// previewColour shows the selection live; Save makes it stick.
 func (r *sceneDeviceRow) previewColour() {
-	ctl, rgb := r.ctl, r.cc.SelRGB()
-	ctl.async("colour", func(ctx context.Context) error { return ctl.SetColour(ctx, rgb) })
+	r.ctl.Live(r.cc.Sel(), dp.DefaultChangeMode)
 }
 
 func (r *sceneDeviceRow) previewBrightness(v float64) {
-	ctl := r.ctl
-	// In colour mode brightness is the colour's "v": rewrite the current
-	// selection with the new value in one write. In white mode it is the
+	// In colour mode brightness is the colour's "v"; in white mode it is the
 	// dedicated brightness DP.
 	if r.st.Mode == dp.ModeColour {
-		rgb := hsvRGB(r.st.Hue, r.st.Sat, v/100.0)
-		ctl.async("colour", func(ctx context.Context) error { return ctl.SetColour(ctx, rgb) })
+		r.previewColour()
 		return
 	}
-	ctl.async("brightness", func(ctx context.Context) error { return ctl.SetWhiteBrightness(ctx, v) })
+	r.ctl.WhiteBrightness(v)
 }
 
-func (r *sceneDeviceRow) previewTemp(v float64) {
-	ctl := r.ctl
-	ctl.async("temperature", func(ctx context.Context) error { return ctl.SetColourTempPercent(ctx, v) })
-}
+func (r *sceneDeviceRow) previewTemp(v float64) { r.ctl.ColourTemp(v) }
 
 // syncHS mirrors the shared widget's wheel selection into the in-memory
 // scene state so Save persists what was previewed.
@@ -400,6 +377,9 @@ func (e *sceneEditor) save() {
 		}
 	}
 
+	for _, r := range e.rows {
+		r.ctl.Save()
+	}
 	e.app.refreshScenesList()
 	e.app.scenesStatus.SetLabel("Scene “" + name + "” saved")
 	e.dialog.Close()

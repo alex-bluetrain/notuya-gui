@@ -59,11 +59,12 @@ func runWizard(configPath string) (code int, applied bool) {
 // scenes/rooms on Apply, and onSaved mirrors the written devices back. shared
 // resolves a device_id to the control the app already drives that bulb with,
 // so Test never opens a session beside it (nil for unknown devices).
-func buildEmbeddedWizard(configPath string, existing []Device, shared func(deviceID string) *control, scenesFn func() []Scene, roomsFn func() []Room, onSaved func([]Device)) gtk.Widgetter {
+func buildEmbeddedWizard(configPath string, existing []Device, shared func(deviceID string) *control, synced func(deviceID string) bool, scenesFn func() []Scene, roomsFn func() []Room, onSaved func([]Device)) gtk.Widgetter {
 	w := &wizard{
 		configPath: configPath,
 		existing:   append([]Device(nil), existing...),
 		shared:     shared,
+		synced:     synced,
 		scenesFn:   scenesFn,
 		roomsFn:    roomsFn,
 		onSaved:    onSaved,
@@ -88,6 +89,9 @@ type wizard struct {
 	// shared (embedded mode) looks up the app's own control for a device_id;
 	// Test goes through it so the bulb keeps a single session (see controlFor).
 	shared func(deviceID string) *control
+	// synced (embedded mode) reports a light Screen Sync is driving; Test
+	// leaves it alone.
+	synced func(deviceID string) bool
 
 	// embeddedRoot parents the error dialog in embedded mode (no window).
 	embeddedRoot gtk.Widgetter
@@ -464,13 +468,10 @@ func (w *wizard) testRow(row *wizardRow) {
 	if row.inFlight {
 		return
 	}
-	// A bulb streaming (Screen Sync) belongs to that stream; testing would
-	// re-point its control under it. The Settings UI disables Test for it.
+	// A light Screen Sync drives belongs to it; Test leaves it alone.
 	d := deviceFrom(row.dev, row.name, row.keyEntry.Text())
-	if w.shared != nil {
-		if ctl := w.shared(d.DeviceID); ctl != nil && ctl.Streaming() {
-			return
-		}
+	if w.synced != nil && w.synced(d.DeviceID) {
+		return
 	}
 	row.inFlight = true
 	row.icon.SetVisible(false)
@@ -520,17 +521,17 @@ func (w *wizard) testRow(row *wizardRow) {
 const wizardFlashHold = 166 * time.Millisecond
 
 // wizardFlashColours is the blink sequence: red and blue alternating.
-var wizardFlashColours = []dp.RGB{
-	{R: 255, G: 0, B: 0}, // red
-	{R: 0, G: 0, B: 255}, // blue
-	{R: 255, G: 0, B: 0}, // red
-	{R: 0, G: 0, B: 255}, // blue
-	{R: 255, G: 0, B: 0}, // red
-	{R: 0, G: 0, B: 255}, // blue
+var wizardFlashColours = []dp.HSV{
+	{H: 0, S: 1000, V: 1000},   // red
+	{H: 240, S: 1000, V: 1000}, // blue
+	{H: 0, S: 1000, V: 1000},   // red
+	{H: 240, S: 1000, V: 1000}, // blue
+	{H: 0, S: 1000, V: 1000},   // red
+	{H: 240, S: 1000, V: 1000}, // blue
 }
 
 // runWizardTest proves a bulb answers on its local key by powering it on and
-// blinking it red↔blue through the live-drag streamer, then leaves it on. A bad
+// blinking it red↔blue live, then saves the last colour and leaves it on. A bad
 // key or wrong IP fails to connect here.
 func runWizardTest(ctl *control) error {
 	powCtx, cancel := context.WithTimeout(context.Background(), wizardTestTimeout)
@@ -540,16 +541,13 @@ func runWizardTest(ctl *control) error {
 		return err
 	}
 
-	owner := new(int) // unique token for this test's stream
-	if err := ctl.BeginLive(owner, wizardFlashColours[0], dp.ChangeJump); err != nil {
-		return err
-	}
-	for _, rgb := range wizardFlashColours {
-		ctl.UpdateLive(owner, rgb)
+	for _, c := range wizardFlashColours {
+		ctl.Live(c, dp.ChangeJump)
 		time.Sleep(wizardFlashHold)
 	}
-	ctl.EndLive(owner)
-	return nil
+	ctx, cancel := context.WithTimeout(context.Background(), wizardTestTimeout)
+	defer cancel()
+	return ctl.SaveWait(ctx)
 }
 
 // allReady reports whether there is at least one device and every row is ready

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -28,7 +27,7 @@ const (
 type keeper struct {
 	once sync.Once
 	stop chan struct{}
-	wake chan struct{} // buffered(1): poke the loop (stream ended, re-keyed)
+	wake chan struct{} // buffered(1): poke the loop (command failed, re-keyed)
 
 	subMu sync.Mutex
 	subs  []func(deviceStatus)
@@ -66,8 +65,8 @@ func (c *control) publish(st deviceStatus) {
 }
 
 // Start runs the link keeper until Close: connect, publish a status snapshot,
-// watch the link, and on loss reconnect with exponential backoff. It idles
-// while a live stream owns the bulb.
+// watch the link, and on loss reconnect with exponential backoff. Its status
+// reads queue behind the writer's pending writes, so they see their result.
 func (c *control) Start() { go c.keepLoop() }
 
 func (c *control) keepLoop() {
@@ -80,19 +79,10 @@ func (c *control) keepLoop() {
 			return
 		default:
 		}
-		if c.Streaming() {
-			if !c.sleep(0) {
-				return
-			}
-			continue
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 		st, err := c.Refresh(ctx)
 		cancel()
 		if err != nil {
-			if errors.Is(err, errLiveStream) {
-				continue
-			}
 			// The keeper is the probe: a failed read means the link is
 			// unusable even when the socket has not errored, so redial.
 			c.dropCurrent()

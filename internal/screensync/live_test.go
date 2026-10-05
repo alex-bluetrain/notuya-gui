@@ -77,14 +77,14 @@ func TestLiveCapture(t *testing.T) {
 		Sources:    c.Sources(),
 		Regions:    []Region{{Rect: Rect{0, 0, 1, 1}, Lights: []LightSink{l}}},
 		Brightness: 1,
-		OnFrame:    func([]dp.RGB) { frames.Add(1) },
+		OnFrame:    func([]dp.HSV) { frames.Add(1) },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(5 * time.Second)
 	e.Stop()
-	last, _, _ := l.snapshot()
+	last, _ := l.snapshot()
 	t.Logf("%.1f frames/s, last colour %v", float64(frames.Load())/5, last)
 	if frames.Load() == 0 {
 		t.Error("no frames (static screen? move something and retry)")

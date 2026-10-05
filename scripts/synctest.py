@@ -93,6 +93,14 @@ def lamp_rows(app):
             out.append(n)
     return out
 
+def preset_tiles(app):
+    return [n for n in all_named(app, "Seeded") if n.get_role_name() == "toggle button"
+            and "showing" in U.flags(n)][:1]
+
+def on(n):
+    st = n.get_state_set()
+    return st.contains(Atspi.StateType.PRESSED) or st.contains(Atspi.StateType.CHECKED)
+
 def cfgnow():
     return json.load(open(CFG))
 
@@ -129,7 +137,7 @@ try:
     check(len(cfgnow()["screenSync"]["presets"]) == 1, "preset deleted")
 
     # Open seeded preset, bind lights.
-    act(app, "Seeded")
+    act(app, "Edit preset Seeded")
     act(app, "Left")           # expand
     lamps = all_named(app, "Lamp A")
     check(len(lamps) >= 1, "light rows in region")
@@ -149,12 +157,13 @@ try:
     # Start sync from the list.
     nav_back = node(app, "Back")
     if nav_back: Atspi.Action.do_action(nav_back, 0); time.sleep(0.8)
-    sw = node(app, "Sync the lights to this preset") or None
-    sws = [n for n in U.walk(app) if n.get_role_name() == "switch"]
-    check(len(sws) >= 1, "preset switch present")
+    sws = preset_tiles(app)
+    check(len(sws) >= 1, "preset tile present")
     Atspi.Action.do_action(sws[0], 0)
     time.sleep(4)
-    check("checked" in U.flags(sws[0]), f"sync running: {U.flags(sws[0])}")
+    check(on(sws[0]), f"sync running: {U.flags(sws[0])}")
+    live = [U.flags(n) for n in all_named(app, "Live")]
+    check(any("showing" in f for f in live), f"running tile shows Live: {live}")
 
     act(app, "Lights")
     time.sleep(1)
@@ -163,17 +172,17 @@ try:
     check(len(sub) >= 1, "Lamp A shows 'Controlled by Screen Sync' in Lights")
 
     act(app, "Screen Sync")
-    sws = [n for n in U.walk(app) if n.get_role_name() == "switch"]
+    sws = preset_tiles(app)
     Atspi.Action.do_action(sws[0], 0)
     time.sleep(3)
-    check("checked" not in U.flags(sws[0]), "sync stopped")
+    check(not on(sws[0]), "sync stopped")
     act(app, "Lights"); time.sleep(1)
     sub = [n for n in U.walk(app) if (n.get_description() or "") == "Controlled by Screen Sync"]
     check(len(sub) == 0, "lockout cleared after stop")
 
     # Rename + delete region.
     act(app, "Screen Sync")
-    act(app, "Seeded")
+    act(app, "Edit preset Seeded")
     act(app, "Left")
     names = [n for n in U.walk(app) if n.get_role_name() == "text" and (n.get_name() or "") == "Name"]
     ok = False

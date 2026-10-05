@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"strings"
 
 	"github.com/alex-bluetrain/notuya-go/pkg/dp"
 )
@@ -173,25 +171,15 @@ overlay:hover .scene-tile-action {
 // two-stop gradient. The rule is scoped to the given unique class so tiles do
 // not bleed into one another. An empty scene yields no rule.
 func sceneGradientCSS(class string, sc Scene) string {
-	var stops []string
+	var cs []dp.RGB
 	for _, st := range sc.States {
 		r, g, b := sceneStateColour(st)
-		stops = append(stops, fmt.Sprintf("rgb(%d,%d,%d)", r, g, b))
+		cs = append(cs, dp.RGB{R: r, G: g, B: b})
 	}
-	if len(stops) == 0 {
+	if len(cs) == 0 {
 		return ""
 	}
-	if len(stops) == 1 {
-		stops = append(stops, stops[0])
-	}
-	// Two stacked layers: a top-to-bottom vignette (transparent → subtle black)
-	// painted over the diagonal colour gradient, so flat tiles gain depth and
-	// the bottom name label stays legible. The vignette is listed first because
-	// earlier background-image layers paint on top.
-	return fmt.Sprintf(
-		"button.%s { background-image: linear-gradient(to bottom, transparent 55%%, alpha(#000, 0.28) 100%%), linear-gradient(135deg, %s); border-radius: 16px; }\n",
-		class, strings.Join(stops, ", "),
-	)
+	return tileGradientCSS(class, cs)
 }
 
 // applyScene fans a scene out to the lights it names, one goroutine per state,

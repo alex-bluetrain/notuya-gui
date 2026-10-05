@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"strings"
@@ -12,8 +13,10 @@ import (
 	"github.com/alex-bluetrain/notuya-go/pkg/dp"
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/cairo"
+	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	coreglib "github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
+	"github.com/diamondburned/gotk4/pkg/pango"
 
 	"github.com/alex-bluetrain/notuya-gui/internal/screensync"
 )
@@ -23,8 +26,8 @@ const (
 	syncEditPoll  = 500 * time.Millisecond
 )
 
-// syncTab is the Screen Sync tab: a list of presets, one page per preset
-// with its regions, and the overlay that edits them over the target. One
+// syncTab is the Screen Sync tab: a grid of preset tiles (click to sync),
+// one page per preset with its regions, and the overlay that edits them over the target. One
 // preset syncs at a time.
 type syncTab struct {
 	a       *desktopApp
@@ -32,10 +35,12 @@ type syncTab struct {
 	banner  *adw.Banner
 	tracker screensync.Tracker // nil: no Hyprland
 
-	listBox    *gtk.Box
-	presetList gtk.Widgetter
-	switches   []*gtk.Switch
-	suppress   bool
+	flow      *gtk.FlowBox
+	tiles     []*gtk.ToggleButton
+	suppress  bool
+	css       *gtk.CSSProvider
+	tileCSS   string    // per-tile idle fills, rebuilt with the grid
+	lastPaint time.Time // last live repaint of the running tile
 
 	// The open preset page (nil when on the list).
 	page       *adw.NavigationPage
@@ -78,11 +83,32 @@ func (a *desktopApp) buildScreenSyncTab() gtk.Widgetter {
 
 	t.banner = adw.NewBanner("")
 
-	t.listBox = gtk.NewBox(gtk.OrientationVertical, 18)
-	t.listBox.SetMarginTop(18)
-	t.listBox.SetMarginBottom(18)
-	t.listBox.SetMarginStart(12)
-	t.listBox.SetMarginEnd(12)
+	// Tiles reuse the Scenes tile classes; this provider adds each preset's
+	// fill and the running tile's live colours.
+	t.css = gtk.NewCSSProvider()
+	if disp := gdk.DisplayGetDefault(); disp != nil {
+		gtk.StyleContextAddProviderForDisplay(disp, t.css, uint(gtk.STYLE_PROVIDER_PRIORITY_APPLICATION))
+	}
+
+	box := gtk.NewBox(gtk.OrientationVertical, 12)
+	box.SetMarginTop(14)
+	box.SetMarginBottom(14)
+	box.SetMarginStart(14)
+	box.SetMarginEnd(14)
+
+	title := gtk.NewLabel("Screen Sync")
+	title.AddCSSClass("title-2")
+	title.SetXAlign(0)
+
+	t.flow = gtk.NewFlowBox()
+	t.flow.AddCSSClass("scenes-flow")
+	t.flow.SetSelectionMode(gtk.SelectionNone)
+	t.flow.SetHomogeneous(true)
+	t.flow.SetColumnSpacing(12)
+	t.flow.SetRowSpacing(12)
+	t.flow.SetMinChildrenPerLine(2)
+	t.flow.SetMaxChildrenPerLine(3)
+	t.flow.SetVAlign(gtk.AlignStart)
 
 	bright := adw.NewPreferencesGroup()
 	bright.SetTitle("Brightness")
@@ -101,10 +127,15 @@ func (a *desktopApp) buildScreenSyncTab() gtk.Widgetter {
 		t.saveSoon()
 	})
 	bright.Add(scale)
+	bright.SetMarginTop(12)
+
+	box.Append(title)
+	box.Append(t.flow)
+	box.Append(bright)
 
 	clamp := adw.NewClamp()
-	clamp.SetMaximumSize(600)
-	clamp.SetChild(t.listBox)
+	clamp.SetMaximumSize(640)
+	clamp.SetChild(box)
 	scroll := gtk.NewScrolledWindow()
 	scroll.SetVExpand(true)
 	scroll.SetChild(clamp)
@@ -121,7 +152,6 @@ func (a *desktopApp) buildScreenSyncTab() gtk.Widgetter {
 	})
 
 	t.rebuildList()
-	t.listBox.Append(bright)
 
 	switch {
 	case t.tracker == nil:
@@ -179,70 +209,180 @@ func screensyncTarget(tg SyncTarget) screensync.Target {
 	return screensync.Target{Kind: tg.Kind, Monitors: tg.Monitors, WindowClass: tg.WindowClass, TitleMatch: tg.TitleMatch}
 }
 
-// --- preset list ---
+// --- preset grid ---
 
+// presetTileCSS is what the Scenes tile classes lack: the subtitle, the
+// accent ring kept on the running tile, and its "Live" badge.
+const presetTileCSS = `
+.sync-tile-sub {
+  margin: 0 12px 10px 12px;
+  color: alpha(#ffffff, 0.85);
+  font-size: smaller;
+  text-shadow: 0 1px 3px alpha(#000, 0.75);
+}
+.sync-tile-name {
+  margin-bottom: 0;
+}
+.scene-tile:checked {
+  outline-color: @accent_color;
+}
+.sync-tile-live {
+  margin: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: #ffffff;
+  background-color: alpha(#000, 0.45);
+  font-size: smaller;
+  font-weight: bold;
+}
+`
+
+// rebuildList rebuilds the preset grid: one tile per preset, then a dashed
+// "add" tile.
 func (t *syncTab) rebuildList() {
-	if t.presetList != nil {
-		t.listBox.Remove(t.presetList)
+	t.flow.RemoveAll()
+	t.tiles = nil
+	var css strings.Builder
+	css.WriteString(presetTileCSS)
+	for i, p := range t.presets() {
+		class := fmt.Sprintf("sync-tile-%d", i)
+		css.WriteString(presetIdleCSS(class, p.ID))
+		t.flow.Insert(t.buildPresetTile(i, p, class), -1)
 	}
-	t.switches = nil
+	t.tileCSS = css.String()
+	t.css.LoadFromString(t.tileCSS)
 
-	add := gtk.NewButtonWithLabel("Add preset…")
+	add := gtk.NewButton()
+	add.AddCSSClass("flat")
+	add.AddCSSClass("scene-add")
+	add.SetHExpand(true)
+	add.SetTooltipText("New preset")
+	setA11yLabel(&add.Widget, "Add preset…")
 	add.SetSensitive(t.tracker != nil)
 	add.ConnectClicked(t.addPresetDialog)
-
-	var w gtk.Widgetter
-	if len(t.presets()) == 0 {
-		sp := adw.NewStatusPage()
-		sp.SetIconName("video-display-symbolic")
-		sp.SetTitle("No presets")
-		sp.SetDescription("A preset captures monitors or a window and drives lights from regions of it")
-		add.AddCSSClass("pill")
-		add.AddCSSClass("suggested-action")
-		add.SetHAlign(gtk.AlignCenter)
-		sp.SetChild(add)
-		w = sp
-	} else {
-		g := adw.NewPreferencesGroup()
-		g.SetTitle("Presets")
-		add.AddCSSClass("flat")
-		g.SetHeaderSuffix(add)
-		for i, p := range t.presets() {
-			row := adw.NewActionRow()
-			row.SetTitle(p.Name)
-			row.SetSubtitle(targetLabel(p.Target))
-			sw := gtk.NewSwitch()
-			sw.SetVAlign(gtk.AlignCenter)
-			sw.SetActive(t.active == i)
-			sw.SetSensitive(t.tracker != nil)
-			sw.SetTooltipText("Sync the lights to this preset")
-			sw.ConnectStateSet(func(on bool) bool {
-				if !t.suppress {
-					t.toggle(i, on)
-				}
-				return false
-			})
-			row.AddSuffix(sw)
-			next := gtk.NewImageFromIconName("go-next-symbolic")
-			row.AddSuffix(next)
-			row.SetActivatable(true)
-			row.ConnectActivated(func() { t.openPreset(i) })
-			g.Add(row)
-			t.switches = append(t.switches, sw)
-		}
-		w = g
-	}
-	t.listBox.Prepend(w)
-	t.presetList = w
+	icon := gtk.NewImageFromIconName("list-add-symbolic")
+	icon.SetPixelSize(28)
+	add.SetChild(icon)
+	t.flow.Insert(add, -1)
+	t.syncSwitches()
 }
 
-// syncSwitches reflects t.active on the list's switches.
+// buildPresetTile is one preset card: clicking it starts or stops the sync;
+// edit and delete sit in the corner as on scene tiles.
+func (t *syncTab) buildPresetTile(i int, p SyncPreset, class string) *gtk.Overlay {
+	tile := gtk.NewToggleButton()
+	tile.AddCSSClass("flat")
+	tile.AddCSSClass("scene-tile")
+	tile.AddCSSClass(class)
+	tile.SetHExpand(true)
+	tile.SetSensitive(t.tracker != nil)
+	tile.SetTooltipText("Start or stop syncing the lights to this preset")
+	setA11yLabel(&tile.Widget, p.Name)
+	tile.ConnectToggled(func() {
+		if !t.suppress {
+			t.toggle(i, tile.Active())
+		}
+	})
+
+	name := gtk.NewLabel(p.Name)
+	name.AddCSSClass("scene-tile-name")
+	name.AddCSSClass("sync-tile-name")
+	name.SetXAlign(0)
+	name.SetEllipsize(pango.EllipsizeEnd)
+	sub := gtk.NewLabel(targetLabel(p.Target))
+	sub.AddCSSClass("sync-tile-sub")
+	sub.SetXAlign(0)
+	sub.SetEllipsize(pango.EllipsizeEnd)
+	text := gtk.NewBox(gtk.OrientationVertical, 0)
+	text.Append(name)
+	text.Append(sub)
+	text.SetVAlign(gtk.AlignEnd)
+	text.SetCanTarget(false)
+
+	live := gtk.NewLabel("Live")
+	live.AddCSSClass("sync-tile-live")
+	live.SetHAlign(gtk.AlignStart)
+	live.SetVAlign(gtk.AlignStart)
+	live.SetCanTarget(false)
+	live.SetVisible(false)
+	tile.ConnectToggled(func() { live.SetVisible(tile.Active()) })
+
+	edit := gtk.NewButtonFromIconName("document-edit-symbolic")
+	edit.AddCSSClass("scene-tile-action")
+	edit.SetTooltipText("Edit preset")
+	setA11yLabel(&edit.Widget, "Edit preset "+p.Name)
+	edit.SetHAlign(gtk.AlignEnd)
+	edit.SetVAlign(gtk.AlignStart)
+	edit.SetMarginEnd(34) // left of the delete button
+	edit.ConnectClicked(func() { t.openPreset(i) })
+
+	del := gtk.NewButtonFromIconName("user-trash-symbolic")
+	del.AddCSSClass("scene-tile-action")
+	del.SetTooltipText("Delete preset")
+	setA11yLabel(&del.Widget, "Delete preset "+p.Name)
+	del.SetHAlign(gtk.AlignEnd)
+	del.SetVAlign(gtk.AlignStart)
+	del.ConnectClicked(func() { t.deletePreset(i) })
+
+	o := gtk.NewOverlay()
+	o.SetChild(tile)
+	o.AddOverlay(text)
+	o.AddOverlay(live)
+	o.AddOverlay(edit)
+	o.AddOverlay(del)
+	t.tiles = append(t.tiles, tile)
+	return o
+}
+
+// presetIdleCSS fills an idle tile with a gradient whose hue is derived
+// from the preset ID, so each preset keeps its own colour.
+func presetIdleCSS(class, id string) string {
+	var h uint32 = 2166136261
+	for i := 0; i < len(id); i++ {
+		h = (h ^ uint32(id[i])) * 16777619
+	}
+	hue := float64(h%360) / 360
+	a := hsvRGB(hue, 0.55, 0.75)
+	b := hsvRGB(math.Mod(hue+0.12, 1), 0.65, 0.55)
+	return tileGradientCSS(class, []dp.RGB{a, b})
+}
+
+// tileGradientCSS is the scene-tile fill: a diagonal gradient across the
+// colours under a bottom vignette that keeps the name legible (earlier
+// background layers paint on top).
+func tileGradientCSS(class string, cs []dp.RGB) string {
+	stops := make([]string, 0, len(cs)+1)
+	for _, c := range cs {
+		stops = append(stops, fmt.Sprintf("rgb(%d,%d,%d)", c.R, c.G, c.B))
+	}
+	if len(stops) == 1 {
+		stops = append(stops, stops[0])
+	}
+	return fmt.Sprintf("button.%s { background-image: linear-gradient(to bottom, transparent 55%%, alpha(#000, 0.28) 100%%), linear-gradient(135deg, %s); }\n",
+		class, strings.Join(stops, ", "))
+}
+
+// paintLive fills the running tile with its regions' live colours, at most
+// five times a second.
+func (t *syncTab) paintLive(i int, cs []dp.RGB) {
+	if len(cs) == 0 || time.Since(t.lastPaint) < 200*time.Millisecond {
+		return
+	}
+	t.lastPaint = time.Now()
+	t.css.LoadFromString(t.tileCSS + tileGradientCSS(fmt.Sprintf("sync-tile-%d", i), cs))
+}
+
+// syncSwitches reflects t.active on the tiles; a stopped tile gets its idle
+// fill back.
 func (t *syncTab) syncSwitches() {
 	t.suppress = true
-	for i, sw := range t.switches {
-		sw.SetActive(t.active == i)
+	for i, tile := range t.tiles {
+		tile.SetActive(t.active == i)
 	}
 	t.suppress = false
+	if t.active < 0 {
+		t.css.LoadFromString(t.tileCSS)
+	}
 }
 
 // addPresetDialog asks for a target and a name, then opens the new preset.
@@ -641,7 +781,11 @@ func (t *syncTab) deletePreset(i int) {
 		s := t.a.cfg.ScreenSync
 		s.Presets = slices.Delete(s.Presets, i, i+1)
 		t.saveSoon()
-		t.nav.Pop()
+		if t.page != nil {
+			t.nav.Pop() // rebuilds the grid
+		} else {
+			t.rebuildList()
+		}
 	})
 	dlg.Present(t.a.window)
 }
@@ -837,6 +981,7 @@ func (t *syncTab) showColours(i int, cs []dp.RGB) {
 	if t.active != i {
 		return
 	}
+	t.paintLive(i, cs)
 	if t.pageIdx == i {
 		for ri, c := range cs {
 			if ri < len(t.swatches) {

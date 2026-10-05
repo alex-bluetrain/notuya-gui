@@ -3,7 +3,7 @@ module github.com/alex-bluetrain/notuya-gui
 go 1.27.0
 
 require (
-	github.com/alex-bluetrain/notuya-go v1.0.1-0.20261005000600-ef745cefd3e8
+	github.com/alex-bluetrain/notuya-go v1.1.0
 	github.com/diamondburned/gotk4-adwaita/pkg v0.0.0-20260808200908-d4aecaa0ff32
 	github.com/diamondburned/gotk4-layer-shell/pkg v0.0.0-20240109211357-6efa9f6dc438
 	github.com/diamondburned/gotk4/pkg v0.4.1

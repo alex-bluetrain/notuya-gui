@@ -4,7 +4,7 @@
 
 Native GTK4/libadwaita desktop controller for Tuya smart bulbs, in Go. Drives
 bulbs **in-process** via the `notuya-go` library — no daemon, no subprocess. One
-window: per-device light control grouped by room, plus a Settings tab for LAN
+window: Scenes, per-device Lights, Screen Sync, and a Settings tab for LAN
 discovery and key entry. A first-run wizard bootstraps the config when none
 exists.
 
@@ -25,7 +25,8 @@ Everything is under `cmd/notuya-gui/` (plus `internal/screensync/`):
 - `main.go` — entry: no/empty config → wizard, else app
 - `app.go` — window, tabs, room helpers, one `control` per device
 - `lights_tab.go` / `colour_controls.go` — Lights tab + shared colour widget
-- `device_panel.go` — per-device cached state for the Rooms summary
+- `device_panel.go` — per-device cached state for the Rooms summary (the
+  Rooms tab is hidden for now: `roomsTabEnabled = false` in `app.go`)
 - `control.go` — per-device session, commands, live-stream ownership
 - `keeper.go` — per-device link keeper: holds the session, probes, redials
 - `stream.go` — live colour streamer (DP 28) for drags and Screen Sync
@@ -48,7 +49,7 @@ Everything is under `cmd/notuya-gui/` (plus `internal/screensync/`):
   closes `Done()`, but a bulb that loses power never errors the socket: the
   keeper's waited heartbeat every 10s is what notices. It redials with
   1s–10s backoff when the link is dead.
-- Tabs **listen, never poll**: Lights rows and Rooms panels `Subscribe` to
+- Tabs **listen, never poll**: Lights rows (and Rooms panels) `Subscribe` to
   the status the keeper publishes on every (re)connect and after a failed
   command.
 - Commands may run concurrently over the session; `c.mu` guards only the

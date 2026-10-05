@@ -11,9 +11,7 @@ import (
 	"slices"
 )
 
-// Device is one entry of the `devices` array in config.json — the only part
-// of that file this tool reads; theme/wallpaper keys used by the sibling
-// Python project are ignored.
+// Device is one entry of the `devices` array in config.json.
 type Device struct {
 	DeviceID  string `json:"device_id"`
 	IPAddress string `json:"ip_address"`
@@ -168,8 +166,7 @@ func resolveConfigPath() string {
 	return filepath.Join(dir, "notuya-gui", "config.json")
 }
 
-// wheelCachePath returns the wheel bitmap cache path beside the config file,
-// matching picker.py's .wheel_cache.bin.
+// wheelCachePath returns the wheel bitmap cache path beside the config file.
 func wheelCachePath(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), ".wheel_cache.bin")
 }

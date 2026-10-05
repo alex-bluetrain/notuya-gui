@@ -22,7 +22,6 @@ servers — don't.
 - **Live colour control.** Drag the colour wheel and the bulbs follow in real
   time. Switch to white mode for colour temperature, and choose between smooth
   fades and instant changes.
-- **Rooms.** Group lights by room and control a whole room, or several, at once.
 - **Scenes.** Save a look — colour, brightness and power per light — and apply
   it with one click.
 - **Screen Sync.** Pick regions of a monitor or window and the bulbs follow

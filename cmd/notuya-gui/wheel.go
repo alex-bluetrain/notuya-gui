@@ -45,7 +45,7 @@ func generateWheelBytes(size, stride int) []byte {
 
 // wheelBytes loads the raw BGRA buffer from cache, or generates and caches
 // it. The cache file is prefixed with a little-endian (size, stride) header,
-// matching picker.py's format so the two share the same .wheel_cache.bin.
+// so a cache written for another size is regenerated.
 func wheelBytes(cachePath string, size, stride int) []byte {
 	expected := stride * size
 	header := make([]byte, 8)

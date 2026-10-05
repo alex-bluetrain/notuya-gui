@@ -52,7 +52,7 @@ type desktopApp struct {
 	// room, updated live as member panels get a status or are toggled.
 	roomRows []*roomRow
 
-	// Room-management widgets (moved out of the Settings tab). manageGroup
+	// Room-management widgets. manageGroup
 	// holds one editable ActionRow per room; roomNameEntry + membersGroup edit
 	// the currently selected room. roomSelected indexes a.cfg.Rooms (-1 = new).
 	manageGroup   *adw.PreferencesGroup
@@ -241,9 +241,8 @@ func (a *desktopApp) buildRoomsTab() *gtk.ScrolledWindow {
 }
 
 // buildRoomManagement builds the room create/rename/delete + device-assignment
-// UI, moved out of the Settings tab so everything room-related lives in one
-// place. It edits a.cfg.Rooms directly and persists via saveCfg. Structural
-// changes (a room's membership) are reflected in the Lights/Rooms control views
+// UI on the Rooms tab. It edits a.cfg.Rooms directly and persists via
+// saveCfg. Structural changes (a room's membership) are reflected in the Lights/Rooms control views
 // on the next launch, matching how device edits in Settings behave.
 func (a *desktopApp) buildRoomManagement() gtk.Widgetter {
 	a.roomSelected = -1

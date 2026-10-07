@@ -27,10 +27,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No `update: true`: a full pacman keyring/base upgrade on windows-latest
+      # is slow and intermittently hangs. setup-msys2 ships a recent base and
+      # `install:` pulls the packages we need from it, so the upgrade buys
+      # nothing here.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          update: true
           install: >-
             make
             mingw-w64-ucrt-x86_64-go

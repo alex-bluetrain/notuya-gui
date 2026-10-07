@@ -6,9 +6,17 @@ name: windows-build
 # Linux-only stub here; this job only checks that the shared app and the
 # Windows stub compile and that `make build` produces notuya-gui.exe.
 
+# Gate only: build on pull requests, never on pushes to feature branches.
+# Windows runners are slow and metered, so skip docs-only PRs with a paths
+# filter and run just when a file that can break the build changed.
 on:
-  push:
   pull_request:
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/windows-build.yml'
 
 jobs:
   windows-build:

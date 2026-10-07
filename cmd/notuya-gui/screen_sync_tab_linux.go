@@ -371,21 +371,6 @@ func presetIdleCSS(class, id string) string {
 	return tileGradientCSS(class, []colour.RGB{a, b})
 }
 
-// tileGradientCSS is the scene-tile fill: a diagonal gradient across the
-// colours under a bottom vignette that keeps the name legible (earlier
-// background layers paint on top).
-func tileGradientCSS(class string, cs []colour.RGB) string {
-	stops := make([]string, 0, len(cs)+1)
-	for _, c := range cs {
-		stops = append(stops, fmt.Sprintf("rgb(%d,%d,%d)", c.R, c.G, c.B))
-	}
-	if len(stops) == 1 {
-		stops = append(stops, stops[0])
-	}
-	return fmt.Sprintf("button.%s { background-image: linear-gradient(to bottom, transparent 55%%, alpha(#000, 0.28) 100%%), linear-gradient(135deg, %s); }\n",
-		class, strings.Join(stops, ", "))
-}
-
 // paintLive fills the running tile with its regions' live colours, at most
 // five times a second.
 func (t *syncTab) paintLive(i int, cs []dp.HSV) {

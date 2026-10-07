@@ -1,0 +1,38 @@
+name: windows-build
+
+# Proves notuya-gui still compiles on Windows. The GUI links GTK4/libadwaita
+# through cgo, so the build needs the MSYS2 UCRT64 toolchain (its gcc, pkgconf
+# and GTK packages), not the plain actions/setup-go Go. Screen Sync is a
+# Linux-only stub here; this job only checks that the shared app and the
+# Windows stub compile and that `make build` produces notuya-gui.exe.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make
+            mingw-w64-ucrt-x86_64-go
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-libadwaita
+
+      - name: make build
+        run: make build
+
+      - name: check the exe was produced
+        run: test -f notuya-gui.exe

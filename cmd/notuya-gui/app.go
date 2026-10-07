@@ -452,7 +452,7 @@ func (a *desktopApp) syncManageSubtitle(idx int) {
 
 // persistRooms writes the current config to disk and reports status.
 func (a *desktopApp) persistRooms(okMsg string) {
-	if err := saveConfig(a.configPath, a.cfg.Devices, a.cfg.Rooms, a.cfg.Scenes, a.cfg.ScreenSync); err != nil {
+	if err := saveConfig(a.configPath, a.cfg.Devices, a.cfg.Rooms, a.cfg.Scenes, a.cfg.screenSyncConfig); err != nil {
 		a.setRoomStatus("Save failed: " + err.Error())
 		return
 	}
@@ -725,7 +725,7 @@ func (a *desktopApp) doDeleteSceneAt(i int) {
 // saveCfg writes the full (devices, rooms, scenes) triple from a.cfg — the
 // single source of truth shared by the scenes and settings tabs.
 func (a *desktopApp) saveCfg() error {
-	return saveConfig(a.configPath, a.cfg.Devices, a.cfg.Rooms, a.cfg.Scenes, a.cfg.ScreenSync)
+	return saveConfig(a.configPath, a.cfg.Devices, a.cfg.Rooms, a.cfg.Scenes, a.cfg.screenSyncConfig)
 }
 
 // closeControls tears down every device session. We don't Release() the app:

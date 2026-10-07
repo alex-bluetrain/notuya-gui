@@ -47,7 +47,7 @@ func TestSaveConfigPreservesUnknownKeys(t *testing.T) {
 	}
 
 	devices := []Device{{DeviceID: "new", IPAddress: "10.0.0.2", LocalKey: "k1", Name: "New"}}
-	if err := saveConfig(path, devices, nil, nil, nil); err != nil {
+	if err := saveConfig(path, devices, nil, nil, screenSyncConfig{}); err != nil {
 		t.Fatalf("saveConfig: %v", err)
 	}
 
@@ -83,7 +83,7 @@ func TestSaveConfigPreservesUnknownKeys(t *testing.T) {
 func TestSaveConfigCreatesMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "config.json")
 	devices := []Device{{DeviceID: "a", IPAddress: "10.0.0.9", LocalKey: "k", Name: "A"}}
-	if err := saveConfig(path, devices, nil, nil, nil); err != nil {
+	if err := saveConfig(path, devices, nil, nil, screenSyncConfig{}); err != nil {
 		t.Fatalf("saveConfig: %v", err)
 	}
 	cfg, err := loadConfig(path)
@@ -159,7 +159,7 @@ func TestSaveConfigRoundTripsRoomsAndCoOwnedKeys(t *testing.T) {
 
 	devices := []Device{{DeviceID: "a", IPAddress: "10.0.0.1", LocalKey: "k", Name: "A"}}
 	rooms := []Room{{Name: "Living", Devices: []string{"a"}}}
-	if err := saveConfig(path, devices, rooms, nil, nil); err != nil {
+	if err := saveConfig(path, devices, rooms, nil, screenSyncConfig{}); err != nil {
 		t.Fatalf("saveConfig: %v", err)
 	}
 
@@ -203,7 +203,7 @@ func TestSaveConfigRoundTripsScenesAndCoOwnedKeys(t *testing.T) {
 			{DeviceID: "b", On: false},
 		}},
 	}
-	if err := saveConfig(path, devices, nil, scenes, nil); err != nil {
+	if err := saveConfig(path, devices, nil, scenes, screenSyncConfig{}); err != nil {
 		t.Fatalf("saveConfig: %v", err)
 	}
 
@@ -242,7 +242,7 @@ func TestSaveConfigDoesNotEscapeHTMLInKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	key := "c{J)1t6y/om!M>gP"
 	devices := []Device{{DeviceID: "a", IPAddress: "10.0.0.1", LocalKey: key, Name: "A"}}
-	if err := saveConfig(path, devices, nil, nil, nil); err != nil {
+	if err := saveConfig(path, devices, nil, nil, screenSyncConfig{}); err != nil {
 		t.Fatalf("saveConfig: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -264,45 +264,3 @@ func TestPathsBesideConfig(t *testing.T) {
 	}
 }
 
-func TestScreenSyncRoundTripKeepsOtherKeys(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"devices":[],"theme":{"name":"gruvbox"}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	sync := &ScreenSync{Brightness: 1.5, Presets: []SyncPreset{{
-		ID: "p1", Name: "Game",
-		Target:        SyncTarget{Kind: "window", WindowClass: "steam_app_1", TitleMatch: "Elden"},
-		RestoreTokens: map[string]string{"window": "tok"},
-		Regions:       []SyncRegion{{ID: "r1", Name: "Left", Rect: [4]float64{0, 0, 0.3, 1}, Devices: []string{"a"}}},
-	}}}
-	if err := saveConfig(path, nil, nil, nil, sync); err != nil {
-		t.Fatal(err)
-	}
-	// A save without screenSync (the wizard's) must keep it.
-	if err := saveConfig(path, nil, nil, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := loadConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ScreenSync == nil || cfg.ScreenSync.Brightness != 1.5 || len(cfg.ScreenSync.Presets) != 1 {
-		t.Fatalf("screenSync = %+v", cfg.ScreenSync)
-	}
-	p := cfg.ScreenSync.Presets[0]
-	if p.Target.WindowClass != "steam_app_1" || p.RestoreTokens["window"] != "tok" || p.Regions[0].Rect[2] != 0.3 {
-		t.Errorf("preset = %+v", p)
-	}
-	data, _ := os.ReadFile(path)
-	if !strings.Contains(string(data), "gruvbox") {
-		t.Error("theme key lost")
-	}
-}
-
-func TestSyncBindIsExclusive(t *testing.T) {
-	p := SyncPreset{Regions: []SyncRegion{{Devices: []string{"a", "b"}}, {Devices: []string{"c"}}}}
-	p.bind(1, "a")
-	if strings.Join(p.Regions[0].Devices, ",") != "b" || strings.Join(p.Regions[1].Devices, ",") != "c,a" {
-		t.Errorf("regions = %+v", p.Regions)
-	}
-}

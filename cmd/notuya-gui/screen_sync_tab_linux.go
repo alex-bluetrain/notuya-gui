@@ -66,11 +66,11 @@ type regionSwatch struct {
 }
 
 func (a *desktopApp) buildScreenSyncTab() gtk.Widgetter {
-	if a.cfg.ScreenSync == nil {
-		a.cfg.ScreenSync = &ScreenSync{Brightness: 1}
+	if a.cfg.ScreenSyncLinux == nil {
+		a.cfg.ScreenSyncLinux = &ScreenSyncLinux{Brightness: 1}
 	}
-	if a.cfg.ScreenSync.Brightness == 0 {
-		a.cfg.ScreenSync.Brightness = 1
+	if a.cfg.ScreenSyncLinux.Brightness == 0 {
+		a.cfg.ScreenSyncLinux.Brightness = 1
 	}
 	t := &syncTab{a: a, active: -1, editTarget: -1, overlay: newSyncOverlay()}
 	a.sync = t
@@ -109,13 +109,13 @@ func (a *desktopApp) buildScreenSyncTab() gtk.Widgetter {
 	bright.SetTitle("Brightness")
 	bright.SetDescription("Scales every region's colour while syncing")
 	scale := gtk.NewScaleWithRange(gtk.OrientationHorizontal, 1, 200, 5)
-	scale.SetValue(a.cfg.ScreenSync.Brightness * 100)
+	scale.SetValue(a.cfg.ScreenSyncLinux.Brightness * 100)
 	scale.AddMark(100, gtk.PosBottom, "")
 	scale.SetFormatValueFunc(func(_ *gtk.Scale, v float64) string { return fmt.Sprintf("%d %%", int(v+0.5)) })
 	scale.SetDrawValue(true)
 	scale.ConnectValueChanged(func() {
 		f := scale.Value() / 100
-		a.cfg.ScreenSync.Brightness = f
+		a.cfg.ScreenSyncLinux.Brightness = f
 		if t.engine != nil {
 			t.engine.SetBrightness(f)
 		}
@@ -127,13 +127,13 @@ func (a *desktopApp) buildScreenSyncTab() gtk.Widgetter {
 	mapping.SetTitle("Colour mapping")
 	mapping.SetSubtitle("Match light: dark scenes stay dark · Match values: brighter, paler")
 	mapping.SetModel(gtk.NewStringList([]string{"Match light", "Match values"}))
-	if a.cfg.ScreenSync.Mapping == "values" {
+	if a.cfg.ScreenSyncLinux.Mapping == "values" {
 		mapping.SetSelected(1)
 	}
 	mapping.NotifyProperty("selected", func() {
-		a.cfg.ScreenSync.Mapping = ""
+		a.cfg.ScreenSyncLinux.Mapping = ""
 		if mapping.Selected() == 1 {
-			a.cfg.ScreenSync.Mapping = "values"
+			a.cfg.ScreenSyncLinux.Mapping = "values"
 		}
 		if t.engine != nil {
 			t.engine.SetMapping(t.mapping())
@@ -172,7 +172,7 @@ func (a *desktopApp) buildScreenSyncTab() gtk.Widgetter {
 	return root
 }
 
-func (t *syncTab) presets() []SyncPreset { return t.a.cfg.ScreenSync.Presets }
+func (t *syncTab) presets() []SyncPreset { return t.a.cfg.ScreenSyncLinux.Presets }
 
 func (t *syncTab) showBanner(msg string) {
 	t.banner.SetTitle(msg)
@@ -406,7 +406,7 @@ func (t *syncTab) toRGB(cs []dp.HSV) []colour.RGB {
 
 // mapping is the configured screen→bulb colour mapping.
 func (t *syncTab) mapping() screensync.Mapping {
-	if t.a.cfg.ScreenSync.Mapping == "values" {
+	if t.a.cfg.ScreenSyncLinux.Mapping == "values" {
 		return screensync.MapValues
 	}
 	return screensync.MapLight
@@ -489,7 +489,7 @@ func (t *syncTab) deletePreset(i int) {
 		if t.active > i {
 			t.active--
 		}
-		s := t.a.cfg.ScreenSync
+		s := t.a.cfg.ScreenSyncLinux
 		s.Presets = slices.Delete(s.Presets, i, i+1)
 		t.saveSoon()
 		t.rebuildList()
@@ -514,7 +514,7 @@ func (t *syncTab) presetOf(pi int) *SyncPreset {
 	if t.editor != nil && t.editor.index == pi {
 		return &t.editor.draft
 	}
-	return &t.a.cfg.ScreenSync.Presets[pi]
+	return &t.a.cfg.ScreenSyncLinux.Presets[pi]
 }
 
 func (t *syncTab) engineRegions(pi int) []screensync.Region {
@@ -570,7 +570,7 @@ func (t *syncTab) run(i int, repick bool) {
 	target := screensyncTarget(p.Target)
 	tokens := p.RestoreTokens
 	regions := t.engineRegions(i)
-	brightness := t.a.cfg.ScreenSync.Brightness
+	brightness := t.a.cfg.ScreenSyncLinux.Brightness
 	mapping := t.mapping()
 	pick := repick
 	go func() {

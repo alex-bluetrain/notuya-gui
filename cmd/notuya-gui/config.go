@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 )
 
 // Device is one entry of the `devices` array in config.json.
@@ -51,59 +50,17 @@ type Scene struct {
 }
 
 // Config is the subset of config.json this tool cares about.
+//
+// Screen Sync is the one subsystem that differs between operating systems, so
+// its config is not a plain field here: it is the embedded screenSyncConfig,
+// defined per OS (config_linux.go, config_windows.go). encoding/json promotes
+// the embedded struct's exported fields, so each OS's screenSync* key sits at
+// the JSON root. One OS neither reads nor writes the other OS's key.
 type Config struct {
-	Devices    []Device    `json:"devices"`
-	Rooms      []Room      `json:"rooms"`
-	Scenes     []Scene     `json:"scenes"`
-	ScreenSync *ScreenSync `json:"screenSync,omitempty"`
-}
-
-// ScreenSync holds the Screen Sync presets. Brightness scales every region
-// colour (0.25-2.0); zero means unset and reads as 1.
-type ScreenSync struct {
-	Brightness float64 `json:"brightness"`
-	// Mapping is "light" (match the screen's light output, the default)
-	// or "values" (send the screen's sRGB values as HSV, brighter).
-	Mapping string       `json:"mapping,omitempty"`
-	Presets []SyncPreset `json:"presets"`
-}
-
-// SyncPreset is a capture target and the regions drawn on it.
-type SyncPreset struct {
-	ID     string     `json:"id"`
-	Name   string     `json:"name"`
-	Target SyncTarget `json:"target"`
-	// RestoreTokens are portal tokens that skip the share picker, keyed by
-	// monitor connector or "window".
-	RestoreTokens map[string]string `json:"restoreTokens,omitempty"`
-	Regions       []SyncRegion      `json:"regions"`
-}
-
-// SyncTarget is what a preset captures: Kind "monitors" or "window".
-type SyncTarget struct {
-	Kind        string   `json:"kind"`
-	Monitors    []string `json:"monitors,omitempty"`
-	WindowClass string   `json:"windowClass,omitempty"`
-	TitleMatch  string   `json:"titleMatch,omitempty"`
-}
-
-// SyncRegion is a rectangle normalised to the target canvas (x, y, w, h)
-// and the lights it drives. A light belongs to at most one region of a
-// preset.
-type SyncRegion struct {
-	ID      string     `json:"id"`
-	Name    string     `json:"name"`
-	Rect    [4]float64 `json:"rect"`
-	Devices []string   `json:"devices"`
-}
-
-// bind gives region idx the light id, taking it from any other region of
-// the preset (bindings are exclusive).
-func (p *SyncPreset) bind(idx int, id string) {
-	for i := range p.Regions {
-		p.Regions[i].Devices = slices.DeleteFunc(p.Regions[i].Devices, func(d string) bool { return d == id })
-	}
-	p.Regions[idx].Devices = append(p.Regions[idx].Devices, id)
+	Devices []Device `json:"devices"`
+	Rooms   []Room   `json:"rooms"`
+	Scenes  []Scene  `json:"scenes"`
+	screenSyncConfig
 }
 
 // roomGroup is a resolved room: its name and the devices it contains, in the
@@ -187,12 +144,18 @@ func loadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// saveConfig writes devices, rooms, scenes and (when non-nil) screenSync back into config.json at path,
-// preserving every other top-level key (wallpaper_sync, theme keys, anything other
-// tools own) by round-tripping the file through a map of raw messages. The
-// write is atomic: a temp file is written then renamed over path, so a crash
-// mid-write can't corrupt the shared config.
-func saveConfig(path string, devices []Device, rooms []Room, scenes []Scene, sync *ScreenSync) error {
+// saveConfig writes devices, rooms, scenes and this OS's screenSync key back
+// into config.json at path, preserving every other top-level key (the other
+// OS's screenSync key, wallpaper_sync, theme keys, anything other tools own)
+// by round-tripping the file through a map of raw messages. The write is
+// atomic: a temp file is written then renamed over path, so a crash mid-write
+// can't corrupt the shared config.
+//
+// sync is this OS's screenSyncConfig; its exported field is a nil pointer when
+// unset, which omitempty drops, so the key is only written once Screen Sync
+// has state. The other OS's key is never named here and so is carried through
+// untouched.
+func saveConfig(path string, devices []Device, rooms []Room, scenes []Scene, sync screenSyncConfig) error {
 	root := map[string]json.RawMessage{}
 	if data, err := os.ReadFile(path); err == nil {
 		if err := json.Unmarshal(data, &root); err != nil {
@@ -229,12 +192,19 @@ func saveConfig(path string, devices []Device, rooms []Room, scenes []Scene, syn
 	}
 	root["scenes"] = scenesJSON
 
-	if sync != nil {
-		syncJSON, err := marshalNoEscape(sync)
-		if err != nil {
-			return fmt.Errorf("config: encoding screenSync: %w", err)
-		}
-		root["screenSync"] = syncJSON
+	// Serialise this OS's screenSync key(s) and copy each into root. With
+	// omitempty on a nil pointer this writes nothing, and the other OS's key
+	// in root is left exactly as it was read.
+	syncRoot := map[string]json.RawMessage{}
+	syncBytes, err := marshalNoEscape(sync)
+	if err != nil {
+		return fmt.Errorf("config: encoding screenSync: %w", err)
+	}
+	if err := json.Unmarshal(syncBytes, &syncRoot); err != nil {
+		return fmt.Errorf("config: encoding screenSync: %w", err)
+	}
+	for k, v := range syncRoot {
+		root[k] = v
 	}
 
 	out, err := marshalNoEscape(root)

@@ -7,16 +7,19 @@ name: windows-build
 # Windows stub compile and that `make build` produces notuya-gui.exe.
 
 # Gate only: build on pull requests, never on pushes to feature branches.
-# Windows runners are slow and metered, so skip docs-only PRs with a paths
-# filter and run just when a file that can break the build changed.
+# No paths filter: this check is marked required in branch protection, and a
+# required check must report on every PR. A paths filter would skip docs-only
+# PRs, the check would never report, and the PR would stay blocked forever
+# waiting for a status that never arrives. The concurrency block below is what
+# keeps the cost down instead.
 on:
   pull_request:
-    paths:
-      - '**.go'
-      - 'go.mod'
-      - 'go.sum'
-      - 'Makefile'
-      - '.github/workflows/windows-build.yml'
+
+# A new commit on a PR cancels the still-running build for its older commit, so
+# the slow Windows runner only ever finishes the latest commit of each PR.
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   windows-build:
@@ -27,13 +30,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # No `update: true`: a full pacman keyring/base upgrade on windows-latest
-      # is slow and intermittently hangs. setup-msys2 ships a recent base and
-      # `install:` pulls the packages we need from it, so the upgrade buys
-      # nothing here.
+      # update: true syncs the pacman base before installing, the pattern the
+      # MSYS2 docs recommend and that other Go+GTK4 CI (WiiUDownloader, Rufin)
+      # uses, so install: resolves against current packages. Package caching is
+      # on by default, so repeat runs skip re-downloading these.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
+          update: true
           install: >-
             make
             mingw-w64-ucrt-x86_64-go

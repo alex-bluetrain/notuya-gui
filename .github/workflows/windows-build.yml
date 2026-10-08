@@ -18,7 +18,7 @@ on:
 # A new commit on a PR cancels the still-running build for its older commit, so
 # the slow Windows runner only ever finishes the latest commit of each PR.
 concurrency:
-  group: windows-build-${{ github.ref }}
+  group: windows-build-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:

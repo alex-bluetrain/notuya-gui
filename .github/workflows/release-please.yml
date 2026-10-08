@@ -15,8 +15,73 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # When release-please actually publishes a release, build the Windows .exe
+  # from the tagged commit and attach it to that GitHub Release. The PR gate
+  # proves compilation but discards its binary and builds a different commit,
+  # so the release artifact has to be built fresh from the tag here.
+  release-exe:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same UCRT64 toolchain the PR gate uses to compile the GTK4/libadwaita
+      # cgo build.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make
+            mingw-w64-ucrt-x86_64-go
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gobject-introspection
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-libadwaita
+
+      # go env reports MSYS2 Unix paths; cygpath -w converts them to the native
+      # Windows paths actions/cache expects.
+      - name: Locate Go caches
+        id: gocache
+        run: |
+          echo "build=$(cygpath -w "$(go env GOCACHE)")" >> "$GITHUB_OUTPUT"
+          echo "mod=$(cygpath -w "$(go env GOMODCACHE)")" >> "$GITHUB_OUTPUT"
+          echo "version=$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
+
+      # Shares the PR gate's cache key, so a release build reuses the compiled
+      # gotk4/libadwaita packages a recent PR run already produced.
+      - name: Cache Go build and module cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.gocache.outputs.build }}
+            ${{ steps.gocache.outputs.mod }}
+          key: windows-go-${{ steps.gocache.outputs.version }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            windows-go-${{ steps.gocache.outputs.version }}-
+
+      - name: make build
+        run: make build
+
+      - name: Upload the exe to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.release-please.outputs.tag_name }}" notuya-gui.exe --clobber

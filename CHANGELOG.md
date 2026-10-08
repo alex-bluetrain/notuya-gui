@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/alex-bluetrain/notuya-gui/compare/v1.6.0...v1.6.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* trigger a release to build the Windows .exe ([#11](https://github.com/alex-bluetrain/notuya-gui/issues/11)) ([3d6578e](https://github.com/alex-bluetrain/notuya-gui/commit/3d6578e0a4bddf83ad03989a8c14892023cdb9ec))
+
 ## [1.6.0](https://github.com/alex-bluetrain/notuya-gui/compare/v1.5.0...v1.6.0) (2026-10-05)
 
 

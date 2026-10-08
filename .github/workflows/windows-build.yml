@@ -47,6 +47,31 @@ jobs:
             mingw-w64-ucrt-x86_64-gtk4
             mingw-w64-ucrt-x86_64-libadwaita
 
+      # The slow part of this build is compiling the gotk4/libadwaita cgo
+      # packages, which the MSYS2 package cache does NOT cover. Caching Go's
+      # own build+module cache lets later runs reuse those compiled packages
+      # instead of rebuilding them, turning a ~12 min cold build into a few
+      # minutes once the cache is warm.
+      #
+      # go env prints MSYS2 Unix paths (/c/...), but actions/cache runs outside
+      # the msys2 shell and needs native Windows paths, so convert with cygpath.
+      - name: Locate Go caches
+        id: gocache
+        run: |
+          echo "build=$(cygpath -w "$(go env GOCACHE)")" >> "$GITHUB_OUTPUT"
+          echo "mod=$(cygpath -w "$(go env GOMODCACHE)")" >> "$GITHUB_OUTPUT"
+          echo "version=$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Go build and module cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.gocache.outputs.build }}
+            ${{ steps.gocache.outputs.mod }}
+          key: windows-go-${{ steps.gocache.outputs.version }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            windows-go-${{ steps.gocache.outputs.version }}-
+
       - name: make build
         run: make build
 

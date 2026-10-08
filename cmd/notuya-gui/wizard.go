@@ -612,7 +612,7 @@ func (w *wizard) apply() {
 		scenes = w.scenesFn()
 	}
 
-	if err := saveConfig(w.configPath, devices, rooms, scenes, nil); err != nil {
+	if err := saveConfig(w.configPath, devices, rooms, scenes, screenSyncConfig{}); err != nil {
 		dlg := adw.NewAlertDialog("Couldn't Save Configuration", err.Error())
 		dlg.AddResponse("ok", "OK")
 		if w.window != nil {

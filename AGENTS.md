@@ -32,12 +32,24 @@ Everything is under `cmd/notuya-gui/` (plus `internal/screensync/`):
 - `keeper.go` — per-device link keeper: holds the session, probes, redials
 - `wire.go` — records what was sent, for the "Sent to bulbs" panel
 - `scenes.go` / `scene_editor.go` — scenes
-- `screen_sync_tab.go` / `sync_overlay.go` — Screen Sync tab + region overlay
+- `screen_sync_tab_linux.go` / `sync_overlay_linux.go` / `preset_editor_linux.go`
+  — Screen Sync tab + region overlay (Linux only)
+- `screen_sync_tab_windows.go` — Windows stub: "not available yet" status page
 - `wizard.go` — first-run window AND the embedded Settings tab
-- `config.go` — Config/Device/Room/Scene/ScreenSync types, `groupByRoom`, `saveConfig`
+- `config.go` — Config/Device/Room/Scene types, `groupByRoom`, `saveConfig`
+- `config_linux.go` / `config_windows.go` — the per-OS Screen Sync config types
 - `wheel.go` — colour wheel bitmap (colour maths comes from notuya-go `dp`)
 - `internal/screensync/` — capture (portal + GStreamer), Hyprland window
-  tracker, region averaging engine
+  tracker, region averaging engine (Linux only; `*_linux.go`, plus `doc.go`
+  so the package still exists on Windows)
+
+Screen Sync is the only subsystem that differs by OS. Everything else (lights,
+rooms, scenes, wizard) is shared and portable. The Linux implementation lives
+in `*_linux.go` files and owns the `screenSyncLinux` config key; Windows gets
+its own `*_windows.go` files and a `screenSyncWindows` key. `ScreenSyncWindows`
+is an empty struct until a Windows backend is built and defines its own fields —
+each OS discovers its own shape, and neither reads or writes the other's key
+(`saveConfig` preserves the absent OS's block untouched).
 
 ## Key facts
 

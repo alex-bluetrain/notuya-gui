@@ -246,10 +246,10 @@ func (e *presetEditor) save() {
 		if t.active == newPreset {
 			t.stop("")
 		}
-		t.a.cfg.ScreenSync.Presets = append(t.a.cfg.ScreenSync.Presets, e.draft)
+		t.a.cfg.ScreenSyncLinux.Presets = append(t.a.cfg.ScreenSyncLinux.Presets, e.draft)
 		t.saveSoon()
 	} else {
-		t.a.cfg.ScreenSync.Presets[e.index] = e.draft
+		t.a.cfg.ScreenSyncLinux.Presets[e.index] = e.draft
 		t.regionsChanged(e.index)
 	}
 	e.win.Close()

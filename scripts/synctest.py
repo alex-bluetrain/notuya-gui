@@ -23,7 +23,7 @@ cfg = {
         {"device_id": "fake2", "ip_address": "127.0.0.1", "local_key": "0123456789abcdef", "name": "Lamp B"},
     ],
     "rooms": [], "scenes": [], "theme": "keep-me",
-    "screenSync": {"brightness": 1, "presets": [{
+    "screenSyncLinux": {"brightness": 1, "presets": [{
         "id": "p1", "name": "Seeded", "target": {"kind": "monitors", "monitors": ["TEST-1"]},
         "regions": [{"id": "r1", "name": "Left", "rect": [0, 0, 0.5, 1], "devices": []},
                     {"id": "r2", "name": "Right", "rect": [0.5, 0, 0.5, 1], "devices": []}]}]},
@@ -134,7 +134,7 @@ try:
     # New preset: same window as edit, default name, no target, nothing runs.
     act(app, "Add preset…")
     check(len(showing("New preset")) >= 1, "Add preset opens the New preset window")
-    check(len(cfgnow()["screenSync"]["presets"]) == 1, "nothing written before Save")
+    check(len(cfgnow()["screenSyncLinux"]["presets"]) == 1, "nothing written before Save")
     names = [n for n in U.walk(app) if n.get_role_name() == "text" and "showing" in U.flags(n)]
     check(any(Atspi.Text.get_text(n, 0, -1) == "Preset 2" for n in names if (n.get_name() or "") == "Preset name"), "default name Preset 2")
     check(len(showing("None")) >= 1, "target shows None")
@@ -147,7 +147,7 @@ try:
     # Cancel discards the draft.
     act(app, "Cancel", "button")
     check(editor_gone(), "Cancel closes the window")
-    check(len(cfgnow()["screenSync"]["presets"]) == 1, "Cancel discards the new preset")
+    check(len(cfgnow()["screenSyncLinux"]["presets"]) == 1, "Cancel discards the new preset")
 
     # New again, Select a target (test backend picks TEST-1), Save.
     act(app, "Add preset…")
@@ -161,7 +161,7 @@ try:
           f"Edit regions no longer waits for a target: {edit[0].get_description() if edit else None}")
     act(app, "Save", "button"); time.sleep(1.2)
     check(editor_gone(), "Save closes the window")
-    c = cfgnow()["screenSync"]["presets"]
+    c = cfgnow()["screenSyncLinux"]["presets"]
     check(len(c) == 2 and c[1]["name"] == "Preset 2", "new preset saved")
     check(c[1]["target"] == {"kind": "monitors", "monitors": ["TEST-1"]}, f"target saved: {c[1]['target']}")
     check(cfgnow().get("theme") == "keep-me", "unknown key kept")
@@ -170,7 +170,7 @@ try:
     act(app, "Delete preset Preset 2")
     act(app, "Delete", "button")
     time.sleep(1)
-    check(len(cfgnow()["screenSync"]["presets"]) == 1, "preset deleted")
+    check(len(cfgnow()["screenSyncLinux"]["presets"]) == 1, "preset deleted")
 
     # Edit seeded preset: bind lights through chips (written only on Save).
     def chip(region):
@@ -182,16 +182,16 @@ try:
     check(len(showing("Edit preset")) >= 1, "Edit preset window opened")
     check(len(chip("Left")) >= 1 and len(chip("Right")) >= 1, "light chips on every region card")
     Atspi.Action.do_action(chip("Left")[0], 0); time.sleep(0.8)
-    r = cfgnow()["screenSync"]["presets"][0]["regions"]
+    r = cfgnow()["screenSyncLinux"]["presets"][0]["regions"]
     check(r[0]["devices"] == [], f"unsaved binding not written: {r[0]['devices']}")
     act(app, "Save", "button"); time.sleep(1.2)
-    r = cfgnow()["screenSync"]["presets"][0]["regions"]
+    r = cfgnow()["screenSyncLinux"]["presets"][0]["regions"]
     check(r[0]["devices"] == ["fake1"], f"Lamp A bound to Left after Save: {r[0]['devices']}")
     act(app, "Edit preset Seeded")
     Atspi.Action.do_action(chip("Right")[0], 0); time.sleep(0.8)
     check(not on(chip("Left")[0]), "turning on in Right turns it off in Left")
     act(app, "Save", "button"); time.sleep(1.2)
-    r = cfgnow()["screenSync"]["presets"][0]["regions"]
+    r = cfgnow()["screenSyncLinux"]["presets"][0]["regions"]
     check(r[0]["devices"] == [] and r[1]["devices"] == ["fake1"], f"binding exclusive (moved): {[x['devices'] for x in r]}")
 
     # Start sync from the list.
@@ -228,7 +228,7 @@ try:
             ok = True
     time.sleep(0.5)
     act(app, "Save", "button"); time.sleep(1.2)
-    r = cfgnow()["screenSync"]["presets"][0]["regions"]
+    r = cfgnow()["screenSyncLinux"]["presets"][0]["regions"]
     check(ok and r[0]["name"] == "Ambi", f"region renamed: {[x['name'] for x in r]}")
     act(app, "Edit preset Seeded")
     trash = [n for n in showing("Delete region Ambi") if U.first_action(n) in U.CLICK_ACTIONS]
@@ -236,7 +236,7 @@ try:
     Atspi.Action.do_action(trash[0], 0); time.sleep(0.6)
     act(app, "Cancel", "button")
     check(editor_gone(), "Cancel closes the editor")
-    check(len(cfgnow()["screenSync"]["presets"][0]["regions"]) == 2, "Cancel discards the delete")
+    check(len(cfgnow()["screenSyncLinux"]["presets"][0]["regions"]) == 2, "Cancel discards the delete")
     act(app, "Edit preset Seeded")
     key("Escape")
     check(editor_gone(), "Escape closes the editor")
@@ -244,7 +244,7 @@ try:
     trash = [n for n in showing("Delete region Ambi") if U.first_action(n) in U.CLICK_ACTIONS]
     Atspi.Action.do_action(trash[0], 0); time.sleep(0.6)
     act(app, "Save", "button"); time.sleep(1.2)
-    r = cfgnow()["screenSync"]["presets"][0]["regions"]
+    r = cfgnow()["screenSyncLinux"]["presets"][0]["regions"]
     check(len(r) == 1 and r[0]["name"] == "Right", f"region deleted: {[x['name'] for x in r]}")
 finally:
     os.killpg(cage.pid, signal.SIGKILL)

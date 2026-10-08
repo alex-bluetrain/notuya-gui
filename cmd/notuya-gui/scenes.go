@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/alex-bluetrain/notuya-go/pkg/dp"
 
 	"github.com/alex-bluetrain/notuya-gui/internal/colour"
@@ -180,6 +183,21 @@ func sceneGradientCSS(class string, sc Scene) string {
 		return ""
 	}
 	return tileGradientCSS(class, cs)
+}
+
+// tileGradientCSS is the scene-tile fill: a diagonal gradient across the
+// colours under a bottom vignette that keeps the name legible (earlier
+// background layers paint on top).
+func tileGradientCSS(class string, cs []colour.RGB) string {
+	stops := make([]string, 0, len(cs)+1)
+	for _, c := range cs {
+		stops = append(stops, fmt.Sprintf("rgb(%d,%d,%d)", c.R, c.G, c.B))
+	}
+	if len(stops) == 1 {
+		stops = append(stops, stops[0])
+	}
+	return fmt.Sprintf("button.%s { background-image: linear-gradient(to bottom, transparent 55%%, alpha(#000, 0.28) 100%%), linear-gradient(135deg, %s); }\n",
+		class, strings.Join(stops, ", "))
 }
 
 // applyScene queues a scene on each light it names; each control's writer

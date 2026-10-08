@@ -1,4 +1,6 @@
-BINARY  := notuya-gui
+# GOEXE is empty on Linux and ".exe" under MSYS2, so the Windows build lands
+# on notuya-gui.exe without a separate target.
+BINARY  := notuya-gui$(shell go env GOEXE)
 PKG     := ./cmd/notuya-gui ./internal/...
 BINDIR  := $(HOME)/.local/bin
 
